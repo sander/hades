@@ -22,11 +22,11 @@ import org.bouncycastle.operator.ContentSigner
 import org.bouncycastle.operator.bc.BcDigestCalculatorProvider
 import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder
 import org.bouncycastle.util.encoders.Hex
-import org.xml.sax.InputSource
+import org.xml.sax.{ErrorHandler, InputSource, SAXParseException}
 
 import java.io.{ByteArrayInputStream, ByteArrayOutputStream, StringReader}
 import java.math.BigInteger
-import java.net.URI
+import java.net.{URI, URL}
 import java.security.cert.X509Certificate
 import java.security.interfaces.RSAPrivateKey
 import java.security.spec.RSAPublicKeySpec
@@ -34,6 +34,7 @@ import java.security.{Key, KeyFactory, MessageDigest, PrivateKey, SecureRandom}
 import java.time.temporal.ChronoUnit
 import java.util
 import java.util.{Base64, Date, UUID}
+import javax.xml.XMLConstants
 import javax.xml.crypto.dsig.SignatureMethod
 import javax.xml.crypto.{
   AlgorithmMethod,
@@ -46,6 +47,7 @@ import javax.xml.crypto.{
 import javax.xml.crypto.dsig.dom.DOMValidateContext
 import javax.xml.crypto.dsig.keyinfo.{KeyInfo, X509Data}
 import javax.xml.parsers.DocumentBuilderFactory
+import javax.xml.validation.SchemaFactory
 import scala.language.implicitConversions
 import scala.xml.{Elem, Node, NodeSeq, Text, TopScope, XML}
 import scala.jdk.CollectionConverters._
@@ -262,7 +264,7 @@ object Signature {
     def toXml: Node = // TODO complete SignedSignatureProperties
       <xades:SignedProperties xmlns:xades={xadesNameSpace} Id={id.value}>
         <xades:SignedSignatureProperties>
-          <xades:SigningTime></xades:SigningTime>
+          <xades:SigningTimef></xades:SigningTimef>
           <xades:SigningCertificateV2></xades:SigningCertificateV2>
           <xades:SignaturePolicyIdentifier></xades:SignaturePolicyIdentifier>
           <xades:SignerRoleV2></xades:SignerRoleV2>
@@ -304,8 +306,28 @@ object Signature {
     val dbf = DocumentBuilderFactory.newInstance()
     dbf.setNamespaceAware(true)
     val is = new InputSource(new StringReader(signature.toString()))
-    val doc = dbf.newDocumentBuilder().parse(is)
+
+    val schemaFactory =
+      SchemaFactory.newInstance(XMLConstants.W3C_XML_SCHEMA_NS_URI)
+    val schema = schemaFactory.newSchema(
+      new URL("https://uri.etsi.org/01903/v1.3.2/XAdES.xsd"))
+    // import javax.xml.transform.stream.StreamSource
+//    val schema: Nothing = sf.newSchema(new StreamSource(getClass.getResourceAsStream(SCHEMA_PATH)))
+    dbf.setSchema(schema)
+
+    val builder = dbf.newDocumentBuilder()
+    builder.setErrorHandler(new ErrorHandler {
+      override def warning(exception: SAXParseException): Unit = ???
+
+      override def error(exception: SAXParseException): Unit =
+        println("exception" + exception)
+
+      override def fatalError(exception: SAXParseException): Unit = ???
+    })
+    val doc = builder.parse(is)
     println("elem" + doc.getDocumentElement)
+//    doc.getDocumentElement.setIdAttribute("Id", true)
+
     val valContext = new DOMValidateContext(
       new KeySelector {
         override def select(keyInfo: KeyInfo,
@@ -378,8 +400,8 @@ object Signature {
         documentReferenceId,
         CommitmentTypeId("http://example.com/test#commitment-id"))
     val objects = List(
-//      DigitalSignatureObject(
-//        QualifyingProperties(signatureId, xadesSignedProperties))
+      DigitalSignatureObject(
+        QualifyingProperties(signatureId, xadesSignedProperties))
     )
 
     val alteredDocument = document
@@ -395,13 +417,13 @@ object Signature {
       List(
         generateReferenceToCurrentDocument(documentReferenceId,
                                            alteredDocument),
-//        Reference(
-//          None,
-//          Some(ReferenceType.SignedProperties),
-//          xadesSignedPropertiesId.reference,
-//          List(Transform(canonicalizationAlgorithmIdentifier)),
-//          canonicalize(xadesSignedProperties.toXml).digestValue
-//        )
+        Reference(
+          None,
+          Some(ReferenceType.SignedProperties),
+          xadesSignedPropertiesId.reference,
+          List(Transform(canonicalizationAlgorithmIdentifier)),
+          canonicalize(xadesSignedProperties.toXml).digestValue
+        )
       )
 
     val dataToBeSigned = originalDataToBeSigned(references)
@@ -440,6 +462,9 @@ object Signature {
                                                    certificate,
                                                    objects,
       ).toXml ++ Text("\n\n"))
+
+    println(d)
+
     validate(d)
 
     d
