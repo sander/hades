@@ -32,18 +32,23 @@ import java.security.interfaces.RSAPrivateKey
 import java.security.spec.RSAPublicKeySpec
 import java.security.{Key, KeyFactory, MessageDigest, PrivateKey, SecureRandom}
 import java.time.temporal.ChronoUnit
+import java.util
 import java.util.{Base64, Date, UUID}
+import javax.xml.crypto.dsig.SignatureMethod
 import javax.xml.crypto.{
   AlgorithmMethod,
   KeySelector,
+  KeySelectorException,
   KeySelectorResult,
-  XMLCryptoContext
+  XMLCryptoContext,
+  XMLStructure
 }
 import javax.xml.crypto.dsig.dom.DOMValidateContext
-import javax.xml.crypto.dsig.keyinfo.KeyInfo
+import javax.xml.crypto.dsig.keyinfo.{KeyInfo, X509Data}
 import javax.xml.parsers.DocumentBuilderFactory
 import scala.language.implicitConversions
 import scala.xml.{Elem, Node, NodeSeq, Text, TopScope, XML}
+import scala.jdk.CollectionConverters._
 
 case class Signature()
 
@@ -198,21 +203,11 @@ object Signature {
     {Base64.getEncoder.encodeToString(signatureValue.value).replaceAll(".{72}(?=.)", "$0\n    ")}
   </ds:SignatureValue>
   <ds:KeyInfo>
-    <ds:KeyValue>
-      <ds:RSAKeyValue>
-        <ds:Modulus>
-          {Base64.getEncoder.encodeToString(params.getModulus.toByteArray)}
-        </ds:Modulus>
-        <ds:Exponent>{Base64.getEncoder.encodeToString(params.getExponent.toByteArray)}</ds:Exponent>
-      </ds:RSAKeyValue>
-    </ds:KeyValue>
-  <!--
     <ds:X509Data>
       <ds:X509Certificate>
         {Base64.getEncoder.encodeToString(certificate.getEncoded).replaceAll(".{72}(?=.)", "$0\n        ")}
       </ds:X509Certificate>
     </ds:X509Data>
-    -->
   </ds:KeyInfo>
   {indentChildren(2, objects.map(_.toXml))}
 </ds:Signature>
@@ -305,14 +300,9 @@ object Signature {
   case class SignatureValue(value: Array[Byte])
 
   // TODO https://www.oracle.com/technical-resources/articles/java/dig-signature-api.html
-  // TODO seems almost correct but namespace gets added upon c14n:
-  // <ds:SignedInfo xmlns:ds="http://www.w3.org/2000/09/xmldsig#" xmlns:foo="http://example.com/foo">
   def validate(signature: Elem): Unit = {
     val dbf = DocumentBuilderFactory.newInstance()
     dbf.setNamespaceAware(true)
-    val bytes = signature.toString().getBytes()
-    println("bytes" + new String(bytes))
-//    val inputStream = new ByteArrayInputStream(bytes)
     val is = new InputSource(new StringReader(signature.toString()))
     val doc = dbf.newDocumentBuilder().parse(is)
     println("elem" + doc.getDocumentElement)
@@ -322,15 +312,29 @@ object Signature {
                             purpose: KeySelector.Purpose,
                             method: AlgorithmMethod,
                             context: XMLCryptoContext): KeySelectorResult = {
-          new KeySelectorResult {
-            override def getKey: Key =
-              KeyFactory
-                .getInstance("RSA")
-                .generatePublic(
-                  new RSAPublicKeySpec(params.getModulus, params.getExponent))
+          keyInfo.getContent
+            .iterator()
+            .asScala
+            .collect {
+              case d: X509Data => {
+                d.getContent.iterator().asScala.collect {
+                  case c: X509Certificate
+                      if c.getPublicKey.getAlgorithm
+                        .equalsIgnoreCase("RSA") && method.getAlgorithm
+                        .equalsIgnoreCase(SignatureMethod.RSA_SHA256) => {
+                    c.getPublicKey
+                  }
+                }
+              }
+            }
+            .flatten
+            .nextOption() match {
+            case Some(key) =>
+              new KeySelectorResult {
+                override def getKey: Key = key
+              }
+            case _ => throw new KeySelectorException("No key found")
           }
-//          val ki = keyInfo.getContent.iterator()
-//          while (ki.hasNext) {}
         }
       },
       doc
