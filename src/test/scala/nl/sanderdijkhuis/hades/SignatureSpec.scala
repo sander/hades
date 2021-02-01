@@ -12,7 +12,7 @@ class SignatureSpec extends AnyFeatureSpec with GivenWhenThen {
     Scenario("Creating an enveloped signature") {
       Given("an XML document")
       val doc =
-        <foo:document xmlns:foo="about:blank">
+        <foo:document xmlns:foo="http://example.com/foo">
   <foo:greeting>Hello, world!</foo:greeting>
 </foo:document>;
 

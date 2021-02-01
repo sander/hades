@@ -22,15 +22,26 @@ import org.bouncycastle.operator.ContentSigner
 import org.bouncycastle.operator.bc.BcDigestCalculatorProvider
 import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder
 import org.bouncycastle.util.encoders.Hex
+import org.xml.sax.InputSource
 
-import java.io.ByteArrayOutputStream
+import java.io.{ByteArrayInputStream, ByteArrayOutputStream, StringReader}
 import java.math.BigInteger
 import java.net.URI
 import java.security.cert.X509Certificate
+import java.security.interfaces.RSAPrivateKey
 import java.security.spec.RSAPublicKeySpec
-import java.security.{KeyFactory, MessageDigest, PrivateKey, SecureRandom}
+import java.security.{Key, KeyFactory, MessageDigest, PrivateKey, SecureRandom}
 import java.time.temporal.ChronoUnit
 import java.util.{Base64, Date, UUID}
+import javax.xml.crypto.{
+  AlgorithmMethod,
+  KeySelector,
+  KeySelectorResult,
+  XMLCryptoContext
+}
+import javax.xml.crypto.dsig.dom.DOMValidateContext
+import javax.xml.crypto.dsig.keyinfo.KeyInfo
+import javax.xml.parsers.DocumentBuilderFactory
 import scala.language.implicitConversions
 import scala.xml.{Elem, Node, NodeSeq, Text, TopScope, XML}
 
@@ -87,7 +98,9 @@ object Signature {
   val dsigNameSpace: String = "http://www.w3.org/2000/09/xmldsig#"
   val xadesNameSpace: String = "http://uri.etsi.org/01903/v1.3.2#"
   val canonicalizationAlgorithmIdentifier: String =
-    Canonicalizer.ALGO_ID_C14N11_WITH_COMMENTS // TODO make wise selection
+    Canonicalizer.ALGO_ID_C14N_EXCL_WITH_COMMENTS
+//    Canonicalizer.ALGO_ID_C14N_OMIT_COMMENTS
+//    Canonicalizer.ALGO_ID_C14N11_WITH_COMMENTS // TODO make wise selection
   val envelopedSignatureTransformIdentifier: String =
     "http://www.w3.org/2000/09/xmldsig#enveloped-signature"
   val digestMethodAlgorithmIdentifier: String =
@@ -170,12 +183,37 @@ object Signature {
     )
   }
 
+  val params: RSAKeyParameters =
+    PublicKeyFactory.createKey(key._1).asInstanceOf[RSAKeyParameters]
+
   case class DigitalSignature(id: SignatureId,
                               signedInfo: SignedInfo,
+                              signatureValue: SignatureValue,
+                              certificate: X509Certificate,
                               objects: Seq[DigitalSignatureObject]) {
     def toXml: Elem =
       <ds:Signature xmlns:ds={dsigNameSpace} Id={id.value}>
   {signedInfo.toXml}
+  <ds:SignatureValue>
+    {Base64.getEncoder.encodeToString(signatureValue.value).replaceAll(".{72}(?=.)", "$0\n    ")}
+  </ds:SignatureValue>
+  <ds:KeyInfo>
+    <ds:KeyValue>
+      <ds:RSAKeyValue>
+        <ds:Modulus>
+          {Base64.getEncoder.encodeToString(params.getModulus.toByteArray)}
+        </ds:Modulus>
+        <ds:Exponent>{Base64.getEncoder.encodeToString(params.getExponent.toByteArray)}</ds:Exponent>
+      </ds:RSAKeyValue>
+    </ds:KeyValue>
+  <!--
+    <ds:X509Data>
+      <ds:X509Certificate>
+        {Base64.getEncoder.encodeToString(certificate.getEncoded).replaceAll(".{72}(?=.)", "$0\n        ")}
+      </ds:X509Certificate>
+    </ds:X509Data>
+    -->
+  </ds:KeyInfo>
   {indentChildren(2, objects.map(_.toXml))}
 </ds:Signature>
   }
@@ -190,8 +228,8 @@ object Signature {
   case class SignedInfo(references: Seq[Reference]) {
     def toXml: Elem =
       <ds:SignedInfo xmlns:ds={dsigNameSpace}>
-    <ds:SignatureMethod Algorithm={signatureMethodAlgorithmIdentifier}/>
     <ds:CanonicalizationMethod Algorithm={canonicalizationAlgorithmIdentifier}/>
+    <ds:SignatureMethod Algorithm={signatureMethodAlgorithmIdentifier}/>
     {indentChildren(4, references.map(_.toXml))}
   </ds:SignedInfo>
   }
@@ -207,8 +245,15 @@ object Signature {
 
   def sign(signatureId: SignatureId,
            references: Seq[Reference],
-           objects: Seq[DigitalSignatureObject]): DigitalSignature =
-    DigitalSignature(signatureId, SignedInfo(references), objects)
+           signatureValue: SignatureValue,
+           certificate: X509Certificate,
+           objects: Seq[DigitalSignatureObject],
+  ): DigitalSignature =
+    DigitalSignature(signatureId,
+                     SignedInfo(references),
+                     signatureValue,
+                     certificate,
+                     objects)
 
   case class XadesSignedPropertiesId(value: String) {
     def reference: URI = URI.create(s"#${value}")
@@ -257,6 +302,49 @@ object Signature {
     </xades:QualifyingProperties>
   }
 
+  case class SignatureValue(value: Array[Byte])
+
+  // TODO https://www.oracle.com/technical-resources/articles/java/dig-signature-api.html
+  // TODO seems almost correct but namespace gets added upon c14n:
+  // <ds:SignedInfo xmlns:ds="http://www.w3.org/2000/09/xmldsig#" xmlns:foo="http://example.com/foo">
+  def validate(signature: Elem): Unit = {
+    val dbf = DocumentBuilderFactory.newInstance()
+    dbf.setNamespaceAware(true)
+    val bytes = signature.toString().getBytes()
+    println("bytes" + new String(bytes))
+//    val inputStream = new ByteArrayInputStream(bytes)
+    val is = new InputSource(new StringReader(signature.toString()))
+    val doc = dbf.newDocumentBuilder().parse(is)
+    println("elem" + doc.getDocumentElement)
+    val valContext = new DOMValidateContext(
+      new KeySelector {
+        override def select(keyInfo: KeyInfo,
+                            purpose: KeySelector.Purpose,
+                            method: AlgorithmMethod,
+                            context: XMLCryptoContext): KeySelectorResult = {
+          new KeySelectorResult {
+            override def getKey: Key =
+              KeyFactory
+                .getInstance("RSA")
+                .generatePublic(
+                  new RSAPublicKeySpec(params.getModulus, params.getExponent))
+          }
+//          val ki = keyInfo.getContent.iterator()
+//          while (ki.hasNext) {}
+        }
+      },
+      doc
+        .getElementsByTagNameNS("http://www.w3.org/2000/09/xmldsig#",
+                                "Signature")
+        .item(0)
+    )
+    import javax.xml.crypto.dsig.XMLSignatureFactory
+    val fac = XMLSignatureFactory.getInstance("DOM")
+    val s = fac.unmarshalXMLSignature(valContext)
+    val valid = s.validate(valContext)
+    println("valid?" + valid)
+  }
+
   // TODO factor preparation out of this function, make a separate sign() function
   def prepareDataToBeSigned(document: Elem): Elem = {
 
@@ -286,8 +374,9 @@ object Signature {
         documentReferenceId,
         CommitmentTypeId("http://example.com/test#commitment-id"))
     val objects = List(
-      DigitalSignatureObject(
-        QualifyingProperties(signatureId, xadesSignedProperties)))
+//      DigitalSignatureObject(
+//        QualifyingProperties(signatureId, xadesSignedProperties))
+    )
 
     val alteredDocument = document
       .copy(child = document.child ++ Text("\n") ++ Text("\n\n"))
@@ -295,45 +384,60 @@ object Signature {
     println("original" + document.child.toList)
     println("altered" + alteredDocument.child.toList)
 
+    println(
+      "xades" + new String(canonicalize(xadesSignedProperties.toXml).value))
+
     val references =
       List(
         generateReferenceToCurrentDocument(documentReferenceId,
                                            alteredDocument),
-        Reference(
-          None,
-          Some(ReferenceType.SignedProperties),
-          xadesSignedPropertiesId.reference,
-          List(Transform(canonicalizationAlgorithmIdentifier)),
-          canonicalize(xadesSignedProperties.toXml).digestValue
-        )
+//        Reference(
+//          None,
+//          Some(ReferenceType.SignedProperties),
+//          xadesSignedPropertiesId.reference,
+//          List(Transform(canonicalizationAlgorithmIdentifier)),
+//          canonicalize(xadesSignedProperties.toXml).digestValue
+//        )
       )
 
-    println(
-      "sign:" +
-        new String(originalDataToBeSigned(references).value))
+    val dataToBeSigned = originalDataToBeSigned(references)
+    val privateKey = key._3.asInstanceOf[RSAPrivateKey]
 
-    document.copy(
+    val sig = java.security.Signature.getInstance("SHA256withRSA")
+    sig.initSign(privateKey)
+    sig.update(dataToBeSigned.value)
+    val signature = SignatureValue(sig.sign())
+
+    val sig2 = java.security.Signature.getInstance("SHA256withRSA")
+//    val params =
+//      PublicKeyFactory.createKey(key._1).asInstanceOf[RSAKeyParameters]
+    val publicKey = KeyFactory
+      .getInstance("RSA")
+      .generatePublic(
+        new RSAPublicKeySpec(params.getModulus, params.getExponent))
+    sig2.initVerify(publicKey)
+    sig2.update(dataToBeSigned.value)
+    println("result:" + sig2.verify(signature.value))
+//    val x = privateKey
+//
+//    val signer = key._2
+//    val out = signer.getOutputStream
+//    println(signer.getAlgorithmIdentifier.getAlgorithm.toString)
+////    out.write(dataToBeSigned.value)
+//    out.write(MessageDigest.getInstance("SHA-256").digest(dataToBeSigned.value))
+//    out.close()
+//    val signature = SignatureValue(signer.getSignature)
+    println("sign:" + new String(dataToBeSigned.value))
+
+    val d = document.copy(
       child = document.child ++ Text("\n") ++ sign(signatureId,
                                                    references,
-                                                   objects).toXml ++ Text(
-        "\n\n"))
+                                                   signature,
+                                                   certificate,
+                                                   objects,
+      ).toXml ++ Text("\n\n"))
+    validate(d)
 
-//    alteredDocument.copy(child =
-//
-//      alteredDocument.child.map {
-//      case e: Elem if e.namespace == dsigNameSpace && e.label == "Signature" =>
-//        sign(signatureId, references, objects).toXml
-//      case a => a
-//    })
-//    document match {
-//      case e: Elem =>
-//        e.copy(
-////          scope = binding,
-//          child = (e.child /*map stripNamespaces*/ ) ++ Text("\n") ++
-//            sign(signatureId, references, objects).toXml ++ Text("\n\n")
-//          // TODO check how to include the same newlines in the canonicalized data to be signed. maybe include placeholder <ds:Signature/>?
-//        )
-//      case _ => throw new Exception("no")
-//    }
+    d
   }
 }
