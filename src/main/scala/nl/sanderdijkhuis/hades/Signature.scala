@@ -22,6 +22,15 @@ import org.bouncycastle.operator.ContentSigner
 import org.bouncycastle.operator.bc.BcDigestCalculatorProvider
 import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder
 import org.bouncycastle.util.encoders.Hex
+import org.w3c.dom.DOMImplementation
+import org.w3c.dom.ls.{
+  DOMImplementationLS,
+  LSInput,
+  LSOutput,
+  LSParser,
+  LSResourceResolver,
+  LSSerializer
+}
 import org.xml.sax.{ErrorHandler, InputSource, SAXParseException}
 
 import java.io.{ByteArrayInputStream, ByteArrayOutputStream, StringReader}
@@ -35,6 +44,7 @@ import java.time.temporal.ChronoUnit
 import java.util
 import java.util.{Base64, Date, UUID}
 import javax.xml.XMLConstants
+import javax.xml.bind.SchemaOutputResolver
 import javax.xml.crypto.dsig.SignatureMethod
 import javax.xml.crypto.{
   AlgorithmMethod,
@@ -47,6 +57,8 @@ import javax.xml.crypto.{
 import javax.xml.crypto.dsig.dom.DOMValidateContext
 import javax.xml.crypto.dsig.keyinfo.{KeyInfo, X509Data}
 import javax.xml.parsers.DocumentBuilderFactory
+import javax.xml.transform.sax.SAXSource
+import javax.xml.transform.{Result, Source}
 import javax.xml.validation.SchemaFactory
 import scala.language.implicitConversions
 import scala.xml.{Elem, Node, NodeSeq, Text, TopScope, XML}
@@ -309,8 +321,50 @@ object Signature {
 
     val schemaFactory =
       SchemaFactory.newInstance(XMLConstants.W3C_XML_SCHEMA_NS_URI)
-    val schema = schemaFactory.newSchema(
-      new URL("https://uri.etsi.org/01903/v1.3.2/XAdES.xsd"))
+    println(
+      "Old resolver, could be used for default behavior: " + schemaFactory.getResourceResolver)
+    schemaFactory.setResourceResolver(new LSResourceResolver {
+      override def resolveResource(`type`: String,
+                                   namespaceURI: String,
+                                   publicId: String,
+                                   systemId: String,
+                                   baseURI: String): LSInput = systemId match {
+        case "http://www.w3.org/TR/2002/REC-xmldsig-core-20020212/xmldsig-core-schema.xsd" => {
+          val domImpl = DocumentBuilderFactory
+            .newInstance()
+            .newDocumentBuilder()
+            .getDOMImplementation
+            .getFeature("LS", "3.0")
+            .asInstanceOf[DOMImplementationLS]
+          val input = domImpl.createLSInput()
+          val path = URI.create(systemId).getPath
+          input.setPublicId(publicId)
+          input.setBaseURI(baseURI)
+          input.setSystemId(systemId)
+          input.setByteStream(
+            getClass.getResourceAsStream("xmldsig-core-schema.xsd"))
+          input
+//          val dols = domImpl.createLSInput()
+//          val in =
+//            dols.setCharacterStream(in)
+        }
+        case id => {
+          println("Could not find " + id)
+          null
+        }
+//        println("resolving")
+//        println(`type`)
+//        println(namespaceURI)
+//        println(publicId)
+//        println(systemId)
+//        println(baseURI)
+      }
+    })
+
+    val schemaPath = getClass.getResource("/XAdES.xsd")
+    val schema = schemaFactory.newSchema(schemaPath)
+//    val schema = schemaFactory.newSchema(
+//      new URL("https://uri.etsi.org/01903/v1.3.2/XAdES.xsd"))
     // import javax.xml.transform.stream.StreamSource
 //    val schema: Nothing = sf.newSchema(new StreamSource(getClass.getResourceAsStream(SCHEMA_PATH)))
     dbf.setSchema(schema)
