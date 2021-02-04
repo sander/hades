@@ -16,7 +16,6 @@ import org.bouncycastle.cert.jcajce.{
 import org.bouncycastle.crypto.params.RSAKeyParameters
 import org.bouncycastle.crypto.util.PublicKeyFactory
 import org.bouncycastle.jce.provider.BouncyCastleProvider
-import org.bouncycastle.operator.ContentSigner
 import org.bouncycastle.operator.bc.BcDigestCalculatorProvider
 import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder
 import org.scalatest._
@@ -29,14 +28,14 @@ import java.math.BigInteger
 import java.security.cert.X509Certificate
 import java.security.interfaces.RSAPrivateKey
 import java.security.spec.RSAPublicKeySpec
-import java.security.{Key, KeyFactory, PrivateKey, SecureRandom}
+import java.security.{Key, KeyFactory, SecureRandom}
 import java.time.temporal.ChronoUnit
 import java.util.Date
 import javax.xml.XMLConstants
 import javax.xml.crypto._
-import javax.xml.crypto.dsig.{SignatureMethod, XMLSignatureFactory}
 import javax.xml.crypto.dsig.dom.DOMValidateContext
 import javax.xml.crypto.dsig.keyinfo.{KeyInfo, X509Data}
+import javax.xml.crypto.dsig.{SignatureMethod, XMLSignatureFactory}
 import javax.xml.parsers.DocumentBuilderFactory
 import javax.xml.validation.SchemaFactory
 import scala.jdk.CollectionConverters._
@@ -49,26 +48,28 @@ class SignatureSpec extends AnyFeatureSpec with GivenWhenThen {
       val doc =
         <foo:document xmlns:foo="http://example.com/foo">
   <foo:greeting>Hello, world!</foo:greeting>
-</foo:document>;
+</foo:document>
+
+      And("a private key and an X.509 certificate")
+      val (privateKey, certificate) = generateTestKeyAndCertificate()
 
       When("I prepare the document for signing")
-      val dataToBeSigned = Signature.prepareDataToBeSigned(doc, testCertificate)
+      val preparation = Signature.prepare(doc, certificate)
 
       And("I sign the document")
-      val privateKey = testKey._3.asInstanceOf[RSAPrivateKey]
-
       val sig = java.security.Signature.getInstance("SHA256withRSA")
       sig.initSign(privateKey)
-      sig.update(dataToBeSigned.value)
+      sig.update(preparation.dataToBeSigned.value)
       val signatureValue = Signature.SignatureValue(sig.sign())
       val signature =
-        Signature.signDocument(doc, testCertificate, signatureValue)
+        Signature.sign(preparation, signatureValue)
 
       println(signature)
     }
   }
 
-  private val testKey: (SubjectPublicKeyInfo, ContentSigner, PrivateKey) = {
+  private def generateTestKeyAndCertificate()
+    : (RSAPrivateKey, X509Certificate) = {
     import java.security.KeyPairGenerator
     val kpg = KeyPairGenerator.getInstance("RSA")
     kpg.initialize(2048)
@@ -76,10 +77,6 @@ class SignatureSpec extends AnyFeatureSpec with GivenWhenThen {
     val spki = SubjectPublicKeyInfo.getInstance(kp.getPublic.getEncoded)
     val signer =
       new JcaContentSignerBuilder("SHA256withRSA").build(kp.getPrivate)
-    (spki, signer, kp.getPrivate)
-  }
-
-  private val testCertificate: X509Certificate = {
     val sr = new SecureRandom() // TODO
     val serial = BigInteger.valueOf(sr.nextInt()) // TODO
     val notBefore = new Date()
@@ -87,12 +84,12 @@ class SignatureSpec extends AnyFeatureSpec with GivenWhenThen {
     val calc = new BcDigestCalculatorProvider()
       .get(new AlgorithmIdentifier(OIWObjectIdentifiers.idSHA1))
     val utils = new X509ExtensionUtils(calc)
-    val subjectKeyIdentifier = utils.createSubjectKeyIdentifier(testKey._1)
-    val authorityKeyIdentifier = utils.createAuthorityKeyIdentifier(testKey._1)
+    val subjectKeyIdentifier = utils.createSubjectKeyIdentifier(spki)
+    val authorityKeyIdentifier = utils.createAuthorityKeyIdentifier(spki)
     val basicConstraints = new BasicConstraints(false)
     val name = new X500Name("CN=Test")
     val params =
-      PublicKeyFactory.createKey(testKey._1).asInstanceOf[RSAKeyParameters]
+      PublicKeyFactory.createKey(spki).asInstanceOf[RSAKeyParameters]
     val publicKey = KeyFactory
       .getInstance("RSA")
       .generatePublic(
@@ -110,7 +107,8 @@ class SignatureSpec extends AnyFeatureSpec with GivenWhenThen {
       .addExtension(Extension.basicConstraints, true, basicConstraints)
     val converter =
       new JcaX509CertificateConverter().setProvider(new BouncyCastleProvider)
-    converter.getCertificate(builder.build(testKey._2))
+    val certificate = converter.getCertificate(builder.build(signer))
+    (kp.getPrivate.asInstanceOf[RSAPrivateKey], certificate)
   }
 
   // See https://www.oracle.com/technical-resources/articles/java/dig-signature-api.html

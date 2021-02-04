@@ -32,6 +32,21 @@ object Signature {
   val signatureMethodAlgorithmIdentifier: String =
     "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"
 
+  case class SignaturePreparation private (document: Elem,
+                                           certificate: X509Certificate) {
+    def dataToBeSigned: OriginalDataToBeSigned = {
+      // https://www.etsi.org/deliver/etsi_ts/101900_101999/101903/01.04.02_60/ts_101903v010402p.pdf
+      // https://www.w3.org/TR/xmldsig-core1/#sec-Processing
+
+      val (_, references, _) = analyzeDocument(document)
+      originalDataToBeSigned(references)
+    }
+  }
+
+  def prepare(document: Elem,
+              certificate: X509Certificate): SignaturePreparation =
+    SignaturePreparation(document, certificate)
+
   def canonicalize(node: Node): CanonicalData = {
     val stream = new ByteArrayOutputStream()
     Canonicalizer
@@ -241,27 +256,16 @@ object Signature {
     (signatureId, references, objects)
   }
 
-  // TODO factor preparation out of this function, make a separate sign() function
-  def prepareDataToBeSigned(
-      document: Elem,
-      certificate: X509Certificate): OriginalDataToBeSigned = {
-
-    // https://www.etsi.org/deliver/etsi_ts/101900_101999/101903/01.04.02_60/ts_101903v010402p.pdf
-    // https://www.w3.org/TR/xmldsig-core1/#sec-Processing
-
-    val (_, references, _) = analyzeDocument(document)
-    originalDataToBeSigned(references)
-  }
-
-  def signDocument(document: Elem,
-                   certificate: X509Certificate,
-                   signature: SignatureValue): Elem = {
+  def sign(preparation: SignaturePreparation,
+           signature: SignatureValue): Elem = {
+    val document = preparation.document
+    val certificate = preparation.certificate
     val (signatureId, references, objects) = analyzeDocument(document)
     val nparams = certificate.getPublicKey
       .asInstanceOf[BCRSAPublicKey]
     val params =
       new RSAKeyParameters(false, nparams.getModulus, nparams.getPublicExponent)
-    val dataToBeSigned = prepareDataToBeSigned(document)
+    val dataToBeSigned = preparation.dataToBeSigned
     val sig2 = java.security.Signature.getInstance("SHA256withRSA")
     val publicKey = KeyFactory
       .getInstance("RSA")
