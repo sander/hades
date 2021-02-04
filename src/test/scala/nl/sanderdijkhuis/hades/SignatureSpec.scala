@@ -53,10 +53,11 @@ class SignatureSpec extends AnyFeatureSpec with GivenWhenThen {
 
       And("a private key and an X.509 certificate")
       val (privateKey, certificate) = generateTestKeyAndCertificate()
+      val signingCertificate = Signature.SigningCertificate(certificate)
 
       When("I prepare the document for signing")
       val signingTime = Signature.SigningTime(Instant.now())
-      val preparation = Signature.prepare(doc, certificate, signingTime)
+      val preparation = Signature.prepare(doc, signingCertificate, signingTime)
 
       And("I sign the document")
       val sig = java.security.Signature.getInstance("SHA256withRSA")

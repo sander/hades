@@ -33,8 +33,10 @@ object Signature {
 
   case class SigningTime(value: Instant)
 
+  case class SigningCertificate(value: X509Certificate)
+
   case class SignaturePreparation private (document: Elem,
-                                           certificate: X509Certificate,
+                                           certificate: SigningCertificate,
                                            signingTime: SigningTime) {
     def dataToBeSigned: OriginalDataToBeSigned = {
       // https://www.etsi.org/deliver/etsi_ts/101900_101999/101903/01.04.02_60/ts_101903v010402p.pdf
@@ -46,7 +48,7 @@ object Signature {
   }
 
   def prepare(document: Elem,
-              certificate: X509Certificate,
+              certificate: SigningCertificate,
               signingTime: SigningTime): SignaturePreparation =
     SignaturePreparation(document, certificate, signingTime)
 
@@ -115,7 +117,7 @@ object Signature {
   case class DigitalSignature(id: SignatureId,
                               signedInfo: SignedInfo,
                               signatureValue: SignatureValue,
-                              certificate: X509Certificate,
+                              certificate: SigningCertificate,
                               objects: Seq[DigitalSignatureObject]) {
     def toXml: Elem =
       <ds:Signature xmlns:ds={dsigNameSpace} Id={id.value}>
@@ -126,7 +128,7 @@ object Signature {
   <ds:KeyInfo>
     <ds:X509Data>
       <ds:X509Certificate>
-        {Base64.getEncoder.encodeToString(certificate.getEncoded).replaceAll(".{72}(?=.)", "$0\n        ")}
+        {Base64.getEncoder.encodeToString(certificate.value.getEncoded).replaceAll(".{72}(?=.)", "$0\n        ")}
       </ds:X509Certificate>
     </ds:X509Data>
   </ds:KeyInfo>
@@ -162,7 +164,7 @@ object Signature {
   def sign(signatureId: SignatureId,
            references: Seq[Reference],
            signatureValue: SignatureValue,
-           certificate: X509Certificate,
+           certificate: SigningCertificate,
            objects: Seq[DigitalSignatureObject],
   ): DigitalSignature =
     DigitalSignature(signatureId,
@@ -268,7 +270,7 @@ object Signature {
     val document = preparation.document
     val certificate = preparation.certificate
     val (signatureId, references, objects) = analyzeDocument(preparation)
-    val nparams = certificate.getPublicKey
+    val nparams = certificate.value.getPublicKey
       .asInstanceOf[BCRSAPublicKey]
     val params =
       new RSAKeyParameters(false, nparams.getModulus, nparams.getPublicExponent)
