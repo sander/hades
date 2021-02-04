@@ -52,7 +52,7 @@ class SignatureSpec extends AnyFeatureSpec with GivenWhenThen {
 </foo:document>;
 
       When("I prepare the document for signing")
-      val dataToBeSigned = Signature.prepareDataToBeSigned(doc)
+      val dataToBeSigned = Signature.prepareDataToBeSigned(doc, testCertificate)
 
       And("I sign the document")
       val privateKey = testKey._3.asInstanceOf[RSAPrivateKey]
@@ -62,7 +62,7 @@ class SignatureSpec extends AnyFeatureSpec with GivenWhenThen {
       sig.update(dataToBeSigned.value)
       val signatureValue = Signature.SignatureValue(sig.sign())
       val signature =
-        Signature.signDocument(doc, testCertificate, testParams, signatureValue)
+        Signature.signDocument(doc, testCertificate, signatureValue)
 
       println(signature)
     }
@@ -112,9 +112,6 @@ class SignatureSpec extends AnyFeatureSpec with GivenWhenThen {
       new JcaX509CertificateConverter().setProvider(new BouncyCastleProvider)
     converter.getCertificate(builder.build(testKey._2))
   }
-
-  val testParams: RSAKeyParameters =
-    PublicKeyFactory.createKey(testKey._1).asInstanceOf[RSAKeyParameters]
 
   // See https://www.oracle.com/technical-resources/articles/java/dig-signature-api.html
   def validateSignature(signature: Elem): Boolean = {

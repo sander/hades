@@ -2,6 +2,7 @@ package nl.sanderdijkhuis.hades
 
 import org.apache.xml.security.c14n.Canonicalizer
 import org.bouncycastle.crypto.params.RSAKeyParameters
+import org.bouncycastle.jcajce.provider.asymmetric.rsa.BCRSAPublicKey
 import org.bouncycastle.jcajce.provider.digest.SHA3
 import org.bouncycastle.util.encoders.Hex
 
@@ -241,7 +242,9 @@ object Signature {
   }
 
   // TODO factor preparation out of this function, make a separate sign() function
-  def prepareDataToBeSigned(document: Elem): OriginalDataToBeSigned = {
+  def prepareDataToBeSigned(
+      document: Elem,
+      certificate: X509Certificate): OriginalDataToBeSigned = {
 
     // https://www.etsi.org/deliver/etsi_ts/101900_101999/101903/01.04.02_60/ts_101903v010402p.pdf
     // https://www.w3.org/TR/xmldsig-core1/#sec-Processing
@@ -252,9 +255,12 @@ object Signature {
 
   def signDocument(document: Elem,
                    certificate: X509Certificate,
-                   params: RSAKeyParameters, // TODO get from certificate
                    signature: SignatureValue): Elem = {
     val (signatureId, references, objects) = analyzeDocument(document)
+    val nparams = certificate.getPublicKey
+      .asInstanceOf[BCRSAPublicKey]
+    val params =
+      new RSAKeyParameters(false, nparams.getModulus, nparams.getPublicExponent)
     val dataToBeSigned = prepareDataToBeSigned(document)
     val sig2 = java.security.Signature.getInstance("SHA256withRSA")
     val publicKey = KeyFactory
