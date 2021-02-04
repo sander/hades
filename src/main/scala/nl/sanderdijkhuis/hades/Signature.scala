@@ -184,6 +184,7 @@ object Signature {
                                    commitmentTypeId: CommitmentTypeId,
                                    signingTime: SigningTime) {
     def toXml: Node = // TODO complete SignedSignatureProperties
+      // TODO should SigningTime have milliseconds?
       <xades:SignedProperties xmlns:xades={xadesNameSpace} Id={id.value}>
         <xades:SignedSignatureProperties>
           <xades:SigningTime>{signingTime.value.toString}</xades:SigningTime>
