@@ -29,6 +29,7 @@ import java.security.cert.X509Certificate
 import java.security.interfaces.RSAPrivateKey
 import java.security.spec.RSAPublicKeySpec
 import java.security.{Key, KeyFactory, SecureRandom}
+import java.time.Instant
 import java.time.temporal.ChronoUnit
 import java.util.Date
 import javax.xml.XMLConstants
@@ -54,7 +55,8 @@ class SignatureSpec extends AnyFeatureSpec with GivenWhenThen {
       val (privateKey, certificate) = generateTestKeyAndCertificate()
 
       When("I prepare the document for signing")
-      val preparation = Signature.prepare(doc, certificate)
+      val signingTime = Signature.SigningTime(Instant.now())
+      val preparation = Signature.prepare(doc, certificate, signingTime)
 
       And("I sign the document")
       val sig = java.security.Signature.getInstance("SHA256withRSA")

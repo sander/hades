@@ -11,11 +11,10 @@ import java.net.URI
 import java.security.cert.X509Certificate
 import java.security.spec.RSAPublicKeySpec
 import java.security.{KeyFactory, MessageDigest}
+import java.time.Instant
 import java.util.Base64
 import scala.language.implicitConversions
 import scala.xml.{Elem, Node, NodeSeq, Text}
-
-case class Signature()
 
 object Signature {
 
@@ -32,20 +31,24 @@ object Signature {
   val signatureMethodAlgorithmIdentifier: String =
     "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"
 
+  case class SigningTime(value: Instant)
+
   case class SignaturePreparation private (document: Elem,
-                                           certificate: X509Certificate) {
+                                           certificate: X509Certificate,
+                                           signingTime: SigningTime) {
     def dataToBeSigned: OriginalDataToBeSigned = {
       // https://www.etsi.org/deliver/etsi_ts/101900_101999/101903/01.04.02_60/ts_101903v010402p.pdf
       // https://www.w3.org/TR/xmldsig-core1/#sec-Processing
 
-      val (_, references, _) = analyzeDocument(document)
+      val (_, references, _) = analyzeDocument(this)
       originalDataToBeSigned(references)
     }
   }
 
   def prepare(document: Elem,
-              certificate: X509Certificate): SignaturePreparation =
-    SignaturePreparation(document, certificate)
+              certificate: X509Certificate,
+              signingTime: SigningTime): SignaturePreparation =
+    SignaturePreparation(document, certificate, signingTime)
 
   def canonicalize(node: Node): CanonicalData = {
     val stream = new ByteArrayOutputStream()
@@ -176,11 +179,12 @@ object Signature {
 
   case class XadesSignedProperties(id: XadesSignedPropertiesId,
                                    objectReference: ReferenceId,
-                                   commitmentTypeId: CommitmentTypeId) {
+                                   commitmentTypeId: CommitmentTypeId,
+                                   signingTime: SigningTime) {
     def toXml: Node = // TODO complete SignedSignatureProperties
       <xades:SignedProperties xmlns:xades={xadesNameSpace} Id={id.value}>
         <xades:SignedSignatureProperties>
-          <xades:SigningTimef></xades:SigningTimef>
+          <xades:SigningTime>{signingTime.value.toString}</xades:SigningTime>
           <xades:SigningCertificateV2></xades:SigningCertificateV2>
           <xades:SignaturePolicyIdentifier></xades:SignaturePolicyIdentifier>
           <xades:SignerRoleV2></xades:SignerRoleV2>
@@ -216,8 +220,10 @@ object Signature {
 
   case class SignatureValue(value: Array[Byte])
 
-  def analyzeDocument(document: Elem)
+  def analyzeDocument(preparation: SignaturePreparation)
     : (SignatureId, List[Reference], List[DigitalSignatureObject]) = {
+
+    val document = preparation.document
 
     // Hashing not for security but for identification
     val digest = new SHA3.Digest256()
@@ -233,7 +239,8 @@ object Signature {
       XadesSignedProperties(
         xadesSignedPropertiesId,
         documentReferenceId,
-        CommitmentTypeId("http://example.com/test#commitment-id"))
+        CommitmentTypeId("http://example.com/test#commitment-id"),
+        preparation.signingTime)
     val objects = List(
       DigitalSignatureObject(
         QualifyingProperties(signatureId, xadesSignedProperties))
@@ -260,7 +267,7 @@ object Signature {
            signature: SignatureValue): Elem = {
     val document = preparation.document
     val certificate = preparation.certificate
-    val (signatureId, references, objects) = analyzeDocument(document)
+    val (signatureId, references, objects) = analyzeDocument(preparation)
     val nparams = certificate.getPublicKey
       .asInstanceOf[BCRSAPublicKey]
     val params =
