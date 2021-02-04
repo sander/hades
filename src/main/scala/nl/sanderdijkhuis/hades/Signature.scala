@@ -2,14 +2,12 @@ package nl.sanderdijkhuis.hades
 
 import org.apache.xml.security.c14n.Canonicalizer
 import org.bouncycastle.crypto.params.RSAKeyParameters
-import org.bouncycastle.crypto.util.PublicKeyFactory
 import org.bouncycastle.jcajce.provider.digest.SHA3
 import org.bouncycastle.util.encoders.Hex
 
 import java.io.ByteArrayOutputStream
 import java.net.URI
 import java.security.cert.X509Certificate
-import java.security.interfaces.RSAPrivateKey
 import java.security.spec.RSAPublicKeySpec
 import java.security.{KeyFactory, MessageDigest}
 import java.util.Base64
@@ -26,8 +24,6 @@ object Signature {
   val xadesNameSpace: String = "http://uri.etsi.org/01903/v1.3.2#"
   val canonicalizationAlgorithmIdentifier: String =
     Canonicalizer.ALGO_ID_C14N_EXCL_WITH_COMMENTS
-//    Canonicalizer.ALGO_ID_C14N_OMIT_COMMENTS
-//    Canonicalizer.ALGO_ID_C14N11_WITH_COMMENTS // TODO make wise selection
   val envelopedSignatureTransformIdentifier: String =
     "http://www.w3.org/2000/09/xmldsig#enveloped-signature"
   val digestMethodAlgorithmIdentifier: String =
@@ -42,18 +38,6 @@ object Signature {
       .canonicalize(node.toString.getBytes, stream, true)
     stream.close()
     CanonicalData(stream.toByteArray)
-  }
-
-  def removeEnvelopedSignature(node: Node): Node = {
-    // TODO
-//    val stream = new ByteArrayOutputStream()
-//    Canonicalizer
-//      .getInstance(envelopedSignatureTransformIdentifier)
-//      .canonicalize(node.toString.getBytes, stream, true)
-//    stream.close()
-//    val out = stream.toByteArray
-//    XML.loadString(out.toString)
-    node
   }
 
   def digest(input: Array[Byte]): DigestValue =
@@ -208,7 +192,6 @@ object Signature {
 
   case class QualifyingProperties(target: SignatureId,
                                   properties: XadesSignedProperties) {
-    // TODO target
     def toXml: Node =
       <xades:QualifyingProperties xmlns:xades={xadesNameSpace} Target={s"#${target.value}"}>
       {properties.toXml}
@@ -219,12 +202,12 @@ object Signature {
 
   def analyzeDocument(document: Elem)
     : (SignatureId, List[Reference], List[DigitalSignatureObject]) = {
+
     // Hashing not for security but for identification
     val digest = new SHA3.Digest256()
     digest.update(document.toString().getBytes)
     // TODO add certificates
 
-    //    val id = Base64.getUrlEncoder.encodeToString(digest.digest())
     val id = new String(Hex.encode(digest.digest())).substring(0, 16)
 
     val signatureId = SignatureId(s"sig-id-${id}")
@@ -259,12 +242,6 @@ object Signature {
 
   // TODO factor preparation out of this function, make a separate sign() function
   def prepareDataToBeSigned(document: Elem): OriginalDataToBeSigned = {
-
-    //    def stripNamespaces(node: Node): Node = node match {
-    //      case e: Elem =>
-    //        e.copy(scope = TopScope, child = e.child map stripNamespaces)
-    //      case _ => node
-    //    }
 
     // https://www.etsi.org/deliver/etsi_ts/101900_101999/101903/01.04.02_60/ts_101903v010402p.pdf
     // https://www.w3.org/TR/xmldsig-core1/#sec-Processing
