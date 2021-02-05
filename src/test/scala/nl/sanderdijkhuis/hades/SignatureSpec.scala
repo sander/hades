@@ -1,5 +1,6 @@
 package nl.sanderdijkhuis.hades
 
+import nl.sanderdijkhuis.hades.Signature.CommitmentTypeId
 import org.bouncycastle.asn1.oiw.OIWObjectIdentifiers
 import org.bouncycastle.asn1.x500.X500Name
 import org.bouncycastle.asn1.x509.{
@@ -26,6 +27,7 @@ import org.xml.sax.{ErrorHandler, InputSource, SAXParseException}
 
 import java.io.StringReader
 import java.math.BigInteger
+import java.net.URI
 import java.security.cert.X509Certificate
 import java.security.interfaces.RSAPrivateKey
 import java.security.spec.RSAPublicKeySpec
@@ -41,7 +43,7 @@ import javax.xml.crypto.dsig.{SignatureMethod, XMLSignatureFactory}
 import javax.xml.parsers.DocumentBuilderFactory
 import javax.xml.validation.SchemaFactory
 import scala.jdk.CollectionConverters._
-import scala.xml.Elem
+import scala.xml.{Elem, Text}
 
 class SignatureSpec extends AnyFeatureSpec with GivenWhenThen {
   Feature("Signatures") {
@@ -55,11 +57,21 @@ class SignatureSpec extends AnyFeatureSpec with GivenWhenThen {
       And("a private key and an X.509 certificate")
       val (privateKey, certificate) = generateTestKeyAndCertificate()
       val signingCertificate = Signature.SigningCertificate(certificate)
+      val restOfCertificateChain = Signature.RestOfCertificateChain(List.empty)
 
       When("I prepare the document for an enveloped signature")
       val signingTime = Signature.SigningTime(Instant.now())
       val docs = List(Signature.OriginalDocument("foo.xml", doc))
-      val preparation = Signature.prepare(docs, signingCertificate, signingTime)
+      val preparation = Signature.prepare(
+        docs,
+        signingCertificate,
+        restOfCertificateChain,
+        signingTime,
+        Signature.SignatureType.Enveloped,
+        Signature.CommitmentTypeId("http://example.com/test#commitment-id"),
+        None,
+        None
+      )
 
       And("I sign the document")
       val sig = java.security.Signature.getInstance("SHA256withRSA")
@@ -87,15 +99,31 @@ class SignatureSpec extends AnyFeatureSpec with GivenWhenThen {
       And("a private key and an X.509 certificate")
       val (privateKey, certificate) = generateTestKeyAndCertificate()
       val signingCertificate = Signature.SigningCertificate(certificate)
+      val restOfCertificateChain = Signature.RestOfCertificateChain(List.empty)
 
       When("I prepare the document for a detached signature")
       val signingTime = Signature.SigningTime(Instant.now())
       val name = "foo.xml"
       val docs = List(Signature.OriginalDocument(name, doc))
-      val preparation = Signature.prepare(docs,
-                                          signingCertificate,
-                                          signingTime,
-                                          Signature.SignatureType.Detached)
+      val preparation = Signature.prepare(
+        docs,
+        signingCertificate,
+        restOfCertificateChain,
+        signingTime,
+        Signature.SignatureType.Detached,
+        Signature.CommitmentTypeId("http://example.com/test#commitment-id"),
+        Some(
+          Signature.SignaturePolicy(URI.create("http://example.com/policy"),
+                                    <policy/>)),
+        Some(
+          Signature.SignerRole(
+            List(Signature.ClaimedRole(Text("foo"))),
+            List(Signature.SignedAssertion(
+              <saml:Assertion xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion">
+  <saml:Issuer/>
+</saml:Assertion>))
+          ))
+      )
 
       And("I sign the document")
       val sig = java.security.Signature.getInstance("SHA256withRSA")

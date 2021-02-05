@@ -1,6 +1,13 @@
 package nl.sanderdijkhuis.hades
 
 import org.apache.xml.security.c14n.Canonicalizer
+import org.bouncycastle.asn1.x500.X500Name
+import org.bouncycastle.asn1.x509.{
+  GeneralName,
+  GeneralNames,
+  IssuerSerial,
+  X509Name
+}
 import org.bouncycastle.crypto.params.RSAKeyParameters
 import org.bouncycastle.jcajce.provider.asymmetric.rsa.BCRSAPublicKey
 import org.bouncycastle.jcajce.provider.digest.SHA3
@@ -34,10 +41,18 @@ object Signature {
 
   case class SigningCertificate(value: X509Certificate)
 
-  case class SignaturePreparation private (documents: List[OriginalDocument],
-                                           certificate: SigningCertificate,
-                                           signingTime: SigningTime,
-                                           signatureType: SignatureType) {
+  /** Issuer CA goes first, root goes last */
+  case class RestOfCertificateChain(value: List[X509Certificate])
+
+  case class SignaturePreparation private (
+      documents: List[OriginalDocument],
+      certificate: SigningCertificate,
+      restOfCertificateChain: RestOfCertificateChain,
+      signingTime: SigningTime,
+      signatureType: SignatureType,
+      commitmentTypeId: CommitmentTypeId,
+      signaturePolicyIdentifier: Option[SignaturePolicy],
+      signerRole: Option[SignerRole]) {
     def dataToBeSigned: OriginalDataToBeSigned = {
       // https://www.etsi.org/deliver/etsi_ts/101900_101999/101903/01.04.02_60/ts_101903v010402p.pdf
       // https://www.w3.org/TR/xmldsig-core1/#sec-Processing
@@ -57,10 +72,20 @@ object Signature {
 
   def prepare(documents: List[OriginalDocument],
               certificate: SigningCertificate,
+              restOfCertificateChain: RestOfCertificateChain,
               signingTime: SigningTime,
-              signatureType: SignatureType = SignatureType.Enveloped)
-    : SignaturePreparation =
-    SignaturePreparation(documents, certificate, signingTime, signatureType)
+              signatureType: SignatureType,
+              commitmentTypeId: CommitmentTypeId,
+              signaturePolicyIdentifier: Option[SignaturePolicy],
+              signerRole: Option[SignerRole]): SignaturePreparation =
+    SignaturePreparation(documents,
+                         certificate,
+                         restOfCertificateChain,
+                         signingTime,
+                         signatureType,
+                         commitmentTypeId,
+                         signaturePolicyIdentifier,
+                         signerRole)
 
   def canonicalize(node: Node): CanonicalData = {
     CanonicalData(
@@ -130,6 +155,7 @@ object Signature {
                               signedInfo: SignedInfo,
                               signatureValue: SignatureValue,
                               certificate: SigningCertificate,
+                              restOfCertificateChain: RestOfCertificateChain,
                               objects: Seq[DigitalSignatureObject]) {
     def toXml: Elem =
       <ds:Signature xmlns:ds={dsigNameSpace} Id={id.value}>
@@ -139,9 +165,9 @@ object Signature {
   </ds:SignatureValue>
   <ds:KeyInfo>
     <ds:X509Data>
-      <ds:X509Certificate>
-        {Base64.getEncoder.encodeToString(certificate.value.getEncoded).replaceAll(".{72}(?=.)", "$0\n        ")}
-      </ds:X509Certificate>
+      {(List(certificate.value) ++ restOfCertificateChain.value).map(cert => <ds:X509Certificate>
+        {Base64.getEncoder.encodeToString(cert.getEncoded).replaceAll(".{72}(?=.)", "$0\n        ")}
+      </ds:X509Certificate>)}
     </ds:X509Data>
   </ds:KeyInfo>
   {indentChildren(2, objects.map(_.toXml))}
@@ -177,12 +203,14 @@ object Signature {
                    references: Seq[Reference],
                    signatureValue: SignatureValue,
                    certificate: SigningCertificate,
+                   restOfCertificateChain: RestOfCertificateChain,
                    objects: Seq[DigitalSignatureObject],
   ): DigitalSignature =
     DigitalSignature(signatureId,
                      SignedInfo(references),
                      signatureValue,
                      certificate,
+                     restOfCertificateChain,
                      objects)
 
   case class XadesSignedPropertiesId(value: String) {
@@ -191,18 +219,69 @@ object Signature {
 
   case class CommitmentTypeId(value: String)
 
-  case class XadesSignedProperties(id: XadesSignedPropertiesId,
-                                   objectReferences: List[ReferenceId],
-                                   commitmentTypeId: CommitmentTypeId,
-                                   signingTime: SigningTime) {
-    def toXml: Node = // TODO complete SignedSignatureProperties
+  case class SignaturePolicy(id: URI, value: Node)
+
+  case class ClaimedRole(value: Node)
+
+  case class SignedAssertion(value: Node)
+
+  case class SignerRole(claimedRoles: List[ClaimedRole],
+                        signedAssertions: List[SignedAssertion])
+
+  case class XadesSignedProperties(
+      id: XadesSignedPropertiesId,
+      objectReferences: List[ReferenceId],
+      commitmentTypeId: CommitmentTypeId,
+      signingTime: SigningTime,
+      signingCertificate: SigningCertificate,
+      maybeSignaturePolicy: Option[SignaturePolicy],
+      signerRole: Option[SignerRole]) {
+    def toXml: Node = {
+      val issuer = new GeneralNames(
+        new GeneralName(
+          new X500Name(signingCertificate.value.getIssuerDN.getName)))
+      val issuerSerial =
+        new IssuerSerial(issuer, signingCertificate.value.getSerialNumber)
+
+      // TODO complete SignedSignatureProperties
       // TODO should SigningTime have milliseconds?
-      <xades:SignedProperties xmlns:xades={xadesNameSpace} Id={id.value}>
+      <xades:SignedProperties xmlns:xades={xadesNameSpace} xmlns:ds={dsigNameSpace} Id={id.value}>
         <xades:SignedSignatureProperties>
           <xades:SigningTime>{signingTime.value.toString}</xades:SigningTime>
-          <xades:SigningCertificateV2></xades:SigningCertificateV2>
-          <xades:SignaturePolicyIdentifier></xades:SignaturePolicyIdentifier>
-          <xades:SignerRoleV2></xades:SignerRoleV2>
+          <xades:SigningCertificateV2>
+            <xades:Cert>
+              <xades:CertDigest>
+                <ds:DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha512"/>
+                <ds:DigestValue>{Base64.getEncoder.encodeToString(MessageDigest.getInstance("SHA-512").digest(signingCertificate.value.getEncoded))}</ds:DigestValue>
+              </xades:CertDigest>
+              <xades:IssuerSerialV2>{Base64.getEncoder.encodeToString(issuerSerial.getEncoded)}</xades:IssuerSerialV2>
+            </xades:Cert>
+          </xades:SigningCertificateV2>
+          {maybeSignaturePolicy.map(id => <xades:SignaturePolicyIdentifier>
+            <xades:SigPolicyId>
+              <xades:Identifier>{id.id.toString}</xades:Identifier>
+            </xades:SigPolicyId>
+            <xades:SigPolicyHash>
+              <ds:DigestMethod Algorithm={digestMethodAlgorithmIdentifier}/>
+              <ds:DigestValue>{Base64.getEncoder.encodeToString(MessageDigest.getInstance("SHA-256").digest(id.value.toString.getBytes))}</ds:DigestValue>
+            </xades:SigPolicyHash>
+          </xades:SignaturePolicyIdentifier>).orNull}
+          {signerRole.map(role => <xades:SignerRoleV2>
+            {role.claimedRoles.length match {
+            case 0 => null
+            case _ => <xades:ClaimedRoles>
+              {role.claimedRoles.map(role => <xades:ClaimedRole>{role.value}</xades:ClaimedRole>)}
+            </xades:ClaimedRoles>
+            }}
+            {role.signedAssertions.length match {
+              case 0 => null
+              case _ => <xades:SignedAssertions>
+              {role.signedAssertions.map(assertion => <xades:SignedAssertion>
+{assertion.value}
+              </xades:SignedAssertion>)}
+            </xades:SignedAssertions>
+            }}
+          </xades:SignerRoleV2>).orNull}
         </xades:SignedSignatureProperties>
         <xades:SignedDataObjectProperties>
           {objectReferences.map(ref => <xades:DataObjectFormat ObjectReference={s"#${ref.value}"}>
@@ -212,9 +291,11 @@ object Signature {
             <xades:CommitmentTypeId>
               <xades:Identifier>{commitmentTypeId.value}</xades:Identifier>
             </xades:CommitmentTypeId>
+            <xades:AllSignedDataObjects/>
           </xades:CommitmentTypeIndication>
         </xades:SignedDataObjectProperties>
       </xades:SignedProperties>
+    }
   }
 
   case class DigitalSignatureObject(value: QualifyingProperties) {
@@ -258,8 +339,11 @@ object Signature {
         xadesSignedPropertiesId,
         preparation.documents.zipWithIndex.map(d =>
           documentReferenceId(d._2 + 1)),
-        CommitmentTypeId("http://example.com/test#commitment-id"),
-        preparation.signingTime
+        preparation.commitmentTypeId,
+        preparation.signingTime,
+        preparation.certificate,
+        preparation.signaturePolicyIdentifier,
+        preparation.signerRole
       )
     val objects = List(
       DigitalSignatureObject(
@@ -318,7 +402,12 @@ object Signature {
       throw new Exception("Invalid signature value")
 
     val dsSignature =
-      sign(signatureId, references, signature, certificate, objects).toXml
+      sign(signatureId,
+           references,
+           signature,
+           certificate,
+           preparation.restOfCertificateChain,
+           objects).toXml
     preparation.signatureType match {
       case SignatureType.Enveloped =>
         preparation.documents.head.content.copy(
