@@ -20,6 +20,7 @@ import org.bouncycastle.operator.bc.BcDigestCalculatorProvider
 import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder
 import org.scalatest._
 import org.scalatest.featurespec.AnyFeatureSpec
+import org.scalatest.matchers.should.Matchers.convertToAnyShouldWrapper
 import org.w3c.dom.ls.{DOMImplementationLS, LSInput, LSResourceResolver}
 import org.xml.sax.{ErrorHandler, InputSource, SAXParseException}
 
@@ -55,9 +56,46 @@ class SignatureSpec extends AnyFeatureSpec with GivenWhenThen {
       val (privateKey, certificate) = generateTestKeyAndCertificate()
       val signingCertificate = Signature.SigningCertificate(certificate)
 
-      When("I prepare the document for signing")
+      When("I prepare the document for an enveloped signature")
       val signingTime = Signature.SigningTime(Instant.now())
-      val preparation = Signature.prepare(doc, signingCertificate, signingTime)
+      val docs = List(Signature.OriginalDocument("foo.xml", doc))
+      val preparation = Signature.prepare(docs, signingCertificate, signingTime)
+
+      And("I sign the document")
+      val sig = java.security.Signature.getInstance("SHA256withRSA")
+      sig.initSign(privateKey)
+      sig.update(preparation.dataToBeSigned.value)
+      val signatureValue = Signature.SignatureValue(sig.sign())
+      val signature =
+        Signature.sign(preparation, signatureValue)
+
+//      println(signature)
+
+      Then("the results contains a ds:Signature")
+      (signature \ "Signature")
+        .filter(_.namespace == "http://www.w3.org/2000/09/xmldsig#")
+        .length shouldBe 1
+    }
+
+    Scenario("Creating a detached signature") {
+      Given("an XML document")
+      val doc =
+        <foo:document xmlns:foo="http://example.com/foo">
+          <foo:greeting>Hello, world!</foo:greeting>
+        </foo:document>
+
+      And("a private key and an X.509 certificate")
+      val (privateKey, certificate) = generateTestKeyAndCertificate()
+      val signingCertificate = Signature.SigningCertificate(certificate)
+
+      When("I prepare the document for a detached signature")
+      val signingTime = Signature.SigningTime(Instant.now())
+      val name = "foo.xml"
+      val docs = List(Signature.OriginalDocument(name, doc))
+      val preparation = Signature.prepare(docs,
+                                          signingCertificate,
+                                          signingTime,
+                                          Signature.SignatureType.Detached)
 
       And("I sign the document")
       val sig = java.security.Signature.getInstance("SHA256withRSA")
@@ -68,6 +106,16 @@ class SignatureSpec extends AnyFeatureSpec with GivenWhenThen {
         Signature.sign(preparation, signatureValue)
 
       println(signature)
+
+      Then("the results is a ds:Signature")
+      signature.namespace shouldBe "http://www.w3.org/2000/09/xmldsig#"
+      signature.label shouldBe "Signature"
+
+      And("it refers to the original document by URI")
+      (signature \\ "Reference").head \@ "URI" shouldBe name
+
+      And("the reference has only a single transform")
+      ((signature \\ "Reference").head \\ "Transform").length shouldBe 1
     }
   }
 

@@ -6,7 +6,6 @@ import org.bouncycastle.jcajce.provider.asymmetric.rsa.BCRSAPublicKey
 import org.bouncycastle.jcajce.provider.digest.SHA3
 import org.bouncycastle.util.encoders.Hex
 
-import java.io.ByteArrayOutputStream
 import java.net.URI
 import java.security.cert.X509Certificate
 import java.security.spec.RSAPublicKeySpec
@@ -35,9 +34,10 @@ object Signature {
 
   case class SigningCertificate(value: X509Certificate)
 
-  case class SignaturePreparation private (document: Elem,
+  case class SignaturePreparation private (documents: List[OriginalDocument],
                                            certificate: SigningCertificate,
-                                           signingTime: SigningTime) {
+                                           signingTime: SigningTime,
+                                           signatureType: SignatureType) {
     def dataToBeSigned: OriginalDataToBeSigned = {
       // https://www.etsi.org/deliver/etsi_ts/101900_101999/101903/01.04.02_60/ts_101903v010402p.pdf
       // https://www.w3.org/TR/xmldsig-core1/#sec-Processing
@@ -47,10 +47,20 @@ object Signature {
     }
   }
 
-  def prepare(document: Elem,
+  sealed trait SignatureType
+  object SignatureType {
+    case object Enveloped extends SignatureType
+    case object Detached extends SignatureType
+  }
+
+  case class OriginalDocument(name: String, content: Elem)
+
+  def prepare(documents: List[OriginalDocument],
               certificate: SigningCertificate,
-              signingTime: SigningTime): SignaturePreparation =
-    SignaturePreparation(document, certificate, signingTime)
+              signingTime: SigningTime,
+              signatureType: SignatureType = SignatureType.Enveloped)
+    : SignaturePreparation =
+    SignaturePreparation(documents, certificate, signingTime, signatureType)
 
   def canonicalize(node: Node): CanonicalData = {
     CanonicalData(
@@ -99,15 +109,19 @@ object Signature {
     }
   }
 
-  def generateReferenceToCurrentDocument(id: ReferenceId,
-                                         node: Node): Reference = {
+  private def generateReferenceToDocument(id: ReferenceId,
+                                          node: Node,
+                                          uri: URI): Reference = {
     val canonicalized = canonicalize(node)
     Reference(
       Some(id),
       None,
-      URI.create(""),
-      List(Transform(envelopedSignatureTransformIdentifier),
-           Transform(canonicalizationAlgorithmIdentifier)),
+      uri,
+      (uri match {
+        case u if u == URI.create("") =>
+          List(Transform(envelopedSignatureTransformIdentifier))
+        case _ => List.empty
+      }) ++ List(Transform(canonicalizationAlgorithmIdentifier)),
       canonicalized.digestValue
     )
   }
@@ -159,11 +173,11 @@ object Signature {
     OriginalDataToBeSigned(canonicalize(SignedInfo(references).toXml).value)
   }
 
-  def sign(signatureId: SignatureId,
-           references: Seq[Reference],
-           signatureValue: SignatureValue,
-           certificate: SigningCertificate,
-           objects: Seq[DigitalSignatureObject],
+  private def sign(signatureId: SignatureId,
+                   references: Seq[Reference],
+                   signatureValue: SignatureValue,
+                   certificate: SigningCertificate,
+                   objects: Seq[DigitalSignatureObject],
   ): DigitalSignature =
     DigitalSignature(signatureId,
                      SignedInfo(references),
@@ -178,7 +192,7 @@ object Signature {
   case class CommitmentTypeId(value: String)
 
   case class XadesSignedProperties(id: XadesSignedPropertiesId,
-                                   objectReference: ReferenceId,
+                                   objectReferences: List[ReferenceId],
                                    commitmentTypeId: CommitmentTypeId,
                                    signingTime: SigningTime) {
     def toXml: Node = // TODO complete SignedSignatureProperties
@@ -191,9 +205,9 @@ object Signature {
           <xades:SignerRoleV2></xades:SignerRoleV2>
         </xades:SignedSignatureProperties>
         <xades:SignedDataObjectProperties>
-          <xades:DataObjectFormat ObjectReference={s"#${objectReference.value}"}>
+          {objectReferences.map(ref => <xades:DataObjectFormat ObjectReference={s"#${ref.value}"}>
             <xades:MimeType>text/xml</xades:MimeType>
-          </xades:DataObjectFormat>
+          </xades:DataObjectFormat>)}
           <xades:CommitmentTypeIndication>
             <xades:CommitmentTypeId>
               <xades:Identifier>{commitmentTypeId.value}</xades:Identifier>
@@ -224,49 +238,67 @@ object Signature {
   def analyzeDocument(preparation: SignaturePreparation)
     : (SignatureId, List[Reference], List[DigitalSignatureObject]) = {
 
-    val document = preparation.document
-
     // Hashing not for security but for identification
     val digest = new SHA3.Digest256()
-    digest.update(document.toString().getBytes)
-    // TODO add certificates
+    for (doc <- preparation.documents) {
+      digest.update(doc.name.getBytes())
+      digest.update(doc.content.toString().getBytes)
+      digest.update(preparation.certificate.value.getEncoded)
+    }
+
+//    val document = preparation.document
 
     val id = new String(Hex.encode(digest.digest())).substring(0, 16)
 
     val signatureId = SignatureId(s"sig-id-${id}")
-    val documentReferenceId = ReferenceId(s"ref-id-${id}-1")
+    def documentReferenceId(i: Int) = ReferenceId(s"ref-id-${id}-${i}")
     val xadesSignedPropertiesId = XadesSignedPropertiesId(s"xades-id-${id}")
     val xadesSignedProperties =
       XadesSignedProperties(
         xadesSignedPropertiesId,
-        documentReferenceId,
+        preparation.documents.zipWithIndex.map(d =>
+          documentReferenceId(d._2 + 1)),
         CommitmentTypeId("http://example.com/test#commitment-id"),
-        preparation.signingTime)
+        preparation.signingTime
+      )
     val objects = List(
       DigitalSignatureObject(
         QualifyingProperties(signatureId, xadesSignedProperties))
     )
-    val alteredDocument = document
-      .copy(child = document.child ++ Text("\n") ++ Text("\n\n"))
-    val references = {
-      List(
-        generateReferenceToCurrentDocument(documentReferenceId,
-                                           alteredDocument),
-        Reference(
-          None,
-          Some(ReferenceType.SignedProperties),
-          xadesSignedPropertiesId.reference,
-          List(Transform(canonicalizationAlgorithmIdentifier)),
-          canonicalize(xadesSignedProperties.toXml).digestValue
+    val references =
+      (preparation.signatureType match {
+        case SignatureType.Enveloped =>
+          List(
+            generateReferenceToDocument(
+              documentReferenceId(1),
+              preparation.documents.head.content
+                .copy(child = preparation.documents.head.content.child ++ Text(
+                  "\n") ++ Text("\n\n")),
+              URI.create("")
+            ))
+        case SignatureType.Detached =>
+          preparation.documents.zipWithIndex
+            .map(
+              d =>
+                generateReferenceToDocument(documentReferenceId(d._2 + 1),
+                                            d._1.content,
+                                            URI.create(d._1.name)))
+      }) ++
+        List(
+          Reference(
+            None,
+            Some(ReferenceType.SignedProperties),
+            xadesSignedPropertiesId.reference,
+            List(Transform(canonicalizationAlgorithmIdentifier)),
+            canonicalize(xadesSignedProperties.toXml).digestValue
+          )
         )
-      )
-    }
+
     (signatureId, references, objects)
   }
 
   def sign(preparation: SignaturePreparation,
            signature: SignatureValue): Elem = {
-    val document = preparation.document
     val certificate = preparation.certificate
     val (signatureId, references, objects) = analyzeDocument(preparation)
     val nparams = certificate.value.getPublicKey
@@ -285,14 +317,14 @@ object Signature {
     if (!sig2.verify(signature.value))
       throw new Exception("Invalid signature value")
 
-    val d = document.copy(
-      child = document.child ++ Text("\n") ++ sign(signatureId,
-                                                   references,
-                                                   signature,
-                                                   certificate,
-                                                   objects,
-      ).toXml ++ Text("\n\n"))
-
-    d
+    val dsSignature =
+      sign(signatureId, references, signature, certificate, objects).toXml
+    preparation.signatureType match {
+      case SignatureType.Enveloped =>
+        preparation.documents.head.content.copy(
+          child = preparation.documents.head.content.child ++ Text("\n") ++ dsSignature ++ Text(
+            "\n\n"))
+      case SignatureType.Detached => dsSignature
+    }
   }
 }
