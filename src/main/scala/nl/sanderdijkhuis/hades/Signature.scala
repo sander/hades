@@ -53,12 +53,10 @@ object Signature {
     SignaturePreparation(document, certificate, signingTime)
 
   def canonicalize(node: Node): CanonicalData = {
-    val stream = new ByteArrayOutputStream()
-    Canonicalizer
-      .getInstance(canonicalizationAlgorithmIdentifier)
-      .canonicalize(node.toString.getBytes, stream, true)
-    stream.close()
-    CanonicalData(stream.toByteArray)
+    CanonicalData(
+      Canonicalizer
+        .getInstance(canonicalizationAlgorithmIdentifier)
+        .canonicalize(node.toString.getBytes))
   }
 
   def digest(input: Array[Byte]): DigestValue =
