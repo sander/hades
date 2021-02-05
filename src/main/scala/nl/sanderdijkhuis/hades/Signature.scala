@@ -26,6 +26,8 @@ object Signature {
 
   org.apache.xml.security.Init.init()
 
+  var enableValidation: Boolean = true
+
   val dsigNameSpace: String = "http://www.w3.org/2000/09/xmldsig#"
   val xadesNameSpace: String = "http://uri.etsi.org/01903/v1.3.2#"
   val canonicalizationAlgorithmIdentifier: String =
@@ -398,7 +400,7 @@ object Signature {
     sig2.initVerify(publicKey)
     sig2.update(dataToBeSigned.value)
 
-    if (!sig2.verify(signature.value))
+    if (enableValidation && !sig2.verify(signature.value))
       throw new Exception("Invalid signature value")
 
     val dsSignature =
