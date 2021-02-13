@@ -29,7 +29,7 @@ object SignatureMarshalling {
       .flatten { case (a, b) => List(a, b) }
       .dropRight(1)
 
-  def marshall(signature: Signature): Elem =
+  def marshall(signature: SignatureData): Elem =
     <ds:Signature xmlns:ds={dsigNameSpace} Id={signature.id.value}>
   {marshall(signature.signedInfo)}
   <ds:SignatureValue>
@@ -61,7 +61,15 @@ object SignatureMarshalling {
       <ds:DigestValue>{reference.digestValue.toBase64}</ds:DigestValue>
     </ds:Reference>
 
-  def marshall(properties: XadesSignedProperties): Elem = {
+  def marshall(enveloped: Enveloped): Elem =
+    enveloped.envelope.value.copy(
+      child = enveloped.envelope.value.child ++ Text("\n") ++ SignatureMarshalling
+        .marshall(enveloped.data) ++ Text("\n\n"))
+
+  def marshall(detached: Detached): Elem =
+    marshall(detached.data)
+
+  def marshall(properties: SignedProperties): Elem = {
     val issuer = new GeneralNames(
       new GeneralName(
         new X500Name(properties.signingCertificate.getIssuerDN.getName)))

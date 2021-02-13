@@ -61,11 +61,10 @@ class SignatureSpec extends AnyFeatureSpec with GivenWhenThen {
       When("I prepare the document for an enveloped signature")
       val signingTime = Signature.SigningTime(Instant.now())
       val docs = List(Signature.OriginalDocument("foo.xml", doc))
-      val preparation = Signature.prepare(
+      val commitment = Signature.Commitment[Signature.Enveloped](
         docs,
         chain,
         signingTime,
-        Signature.SignatureType.Enveloped,
         Signature.CommitmentTypeId("http://example.com/test#commitment-id"),
         None,
         None
@@ -74,11 +73,12 @@ class SignatureSpec extends AnyFeatureSpec with GivenWhenThen {
       And("I sign the document")
       val sig = java.security.Signature.getInstance("SHA256withRSA")
       sig.initSign(privateKey)
-      sig.update(preparation.dataToBeSigned.value)
+      sig.update(commitment.challenge.value)
       val signatureValue = Signature.SignatureValue(sig.sign())
-      val signature = preparation.sign(signatureValue)
+      val signature =
+        SignatureMarshalling.marshall(commitment.prove(signatureValue))
 
-//      println(signature)
+      println(signature)
 
       Then("the results contains a ds:Signature")
       (signature \ "Signature")
@@ -101,11 +101,10 @@ class SignatureSpec extends AnyFeatureSpec with GivenWhenThen {
       val signingTime = Signature.SigningTime(Instant.now())
       val name = "foo.xml"
       val docs = List(Signature.OriginalDocument(name, doc))
-      val preparation = Signature.prepare(
+      val commitment = Signature.Commitment[Signature.Detached](
         docs,
         chain,
         signingTime,
-        Signature.SignatureType.Detached,
         Signature.CommitmentTypeId("http://example.com/test#commitment-id"),
         Some(
           Signature.SignaturePolicy(URI.create("http://example.com/policy"),
@@ -123,9 +122,10 @@ class SignatureSpec extends AnyFeatureSpec with GivenWhenThen {
       And("I sign the document")
       val sig = java.security.Signature.getInstance("SHA256withRSA")
       sig.initSign(privateKey)
-      sig.update(preparation.dataToBeSigned.value)
+      sig.update(commitment.challenge.value)
       val signatureValue = Signature.SignatureValue(sig.sign())
-      val signature = preparation.sign(signatureValue)
+      val signature =
+        SignatureMarshalling.marshall(commitment.prove(signatureValue))
 
       println(signature)
 
