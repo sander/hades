@@ -1,13 +1,6 @@
 package nl.sanderdijkhuis.hades
 
 import org.apache.xml.security.c14n.Canonicalizer
-import org.bouncycastle.asn1.x500.X500Name
-import org.bouncycastle.asn1.x509.{
-  GeneralName,
-  GeneralNames,
-  IssuerSerial,
-  X509Name
-}
 import org.bouncycastle.crypto.params.RSAKeyParameters
 import org.bouncycastle.jcajce.provider.asymmetric.rsa.BCRSAPublicKey
 import org.bouncycastle.jcajce.provider.digest.SHA3
@@ -26,30 +19,28 @@ object Signature {
 
   org.apache.xml.security.Init.init()
 
-  var enableValidation: Boolean = true
+  var unsafeSettingEnableValidation: Boolean = true
 
-  val dsigNameSpace: String = "http://www.w3.org/2000/09/xmldsig#"
-  val xadesNameSpace: String = "http://uri.etsi.org/01903/v1.3.2#"
-  val canonicalizationAlgorithmIdentifier: String =
+  private val canonicalizationAlgorithmIdentifier: String =
     Canonicalizer.ALGO_ID_C14N_EXCL_WITH_COMMENTS
-  val envelopedSignatureTransformIdentifier: String =
+  private val envelopedSignatureTransformIdentifier: String =
     "http://www.w3.org/2000/09/xmldsig#enveloped-signature"
-  val digestMethodAlgorithmIdentifier: String =
-    "http://www.w3.org/2001/04/xmlenc#sha256"
-  val signatureMethodAlgorithmIdentifier: String =
-    "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"
 
   case class SigningTime(value: Instant)
 
-  case class SigningCertificate(value: X509Certificate)
+  /** Head is the signing certificate */
+  case class X509CertificateChain private (value: List[X509Certificate])
+  object X509CertificateChain {
 
-  /** Issuer CA goes first, root goes last */
-  case class RestOfCertificateChain(value: List[X509Certificate])
+    /** Ensures the list is not empty */
+    def apply(head: X509Certificate,
+              tail: X509Certificate*): X509CertificateChain =
+      X509CertificateChain(head :: tail.toList)
+  }
 
   case class SignaturePreparation private (
       documents: List[OriginalDocument],
-      certificate: SigningCertificate,
-      restOfCertificateChain: RestOfCertificateChain,
+      chain: X509CertificateChain,
       signingTime: SigningTime,
       signatureType: SignatureType,
       commitmentTypeId: CommitmentTypeId,
@@ -64,25 +55,26 @@ object Signature {
     }
   }
 
-  sealed trait SignatureType
+  sealed trait SignatureType // TODO make subclasses of SignaturePreparation?
   object SignatureType {
+
+    /** Required for e.g. SAML assertions */
     case object Enveloped extends SignatureType
+
     case object Detached extends SignatureType
   }
 
   case class OriginalDocument(name: String, content: Elem)
 
   def prepare(documents: List[OriginalDocument],
-              certificate: SigningCertificate,
-              restOfCertificateChain: RestOfCertificateChain,
+              chain: X509CertificateChain,
               signingTime: SigningTime,
               signatureType: SignatureType,
               commitmentTypeId: CommitmentTypeId,
               signaturePolicyIdentifier: Option[SignaturePolicy],
               signerRole: Option[SignerRole]): SignaturePreparation =
     SignaturePreparation(documents,
-                         certificate,
-                         restOfCertificateChain,
+                         chain,
                          signingTime,
                          signatureType,
                          commitmentTypeId,
@@ -124,17 +116,7 @@ object Signature {
                        referenceType: Option[ReferenceType],
                        uri: URI,
                        transforms: Seq[Transform],
-                       digestValue: DigestValue) {
-    def toXml: Elem = {
-      <ds:Reference Id={referenceId.map(_.value).orNull} Type={referenceType.map(_.identifier).orNull} URI={uri.toString}>
-      <ds:Transforms>
-        {indentChildren(8, transforms.map(t => <ds:Transform Algorithm={t.algorithmIdentifier}/>))}
-      </ds:Transforms>
-      <ds:DigestMethod Algorithm={digestMethodAlgorithmIdentifier}/>
-      <ds:DigestValue>{digestValue.toBase64}</ds:DigestValue>
-    </ds:Reference>
-    }
-  }
+                       digestValue: DigestValue)
 
   private def generateReferenceToDocument(id: ReferenceId,
                                           node: Node,
@@ -156,25 +138,8 @@ object Signature {
   case class DigitalSignature(id: SignatureId,
                               signedInfo: SignedInfo,
                               signatureValue: SignatureValue,
-                              certificate: SigningCertificate,
-                              restOfCertificateChain: RestOfCertificateChain,
-                              objects: Seq[DigitalSignatureObject]) {
-    def toXml: Elem =
-      <ds:Signature xmlns:ds={dsigNameSpace} Id={id.value}>
-  {signedInfo.toXml}
-  <ds:SignatureValue>
-    {Base64.getEncoder.encodeToString(signatureValue.value).replaceAll(".{72}(?=.)", "$0\n    ")}
-  </ds:SignatureValue>
-  <ds:KeyInfo>
-    <ds:X509Data>
-      {(List(certificate.value) ++ restOfCertificateChain.value).map(cert => <ds:X509Certificate>
-        {Base64.getEncoder.encodeToString(cert.getEncoded).replaceAll(".{72}(?=.)", "$0\n        ")}
-      </ds:X509Certificate>)}
-    </ds:X509Data>
-  </ds:KeyInfo>
-  {indentChildren(2, objects.map(_.toXml))}
-</ds:Signature>
-  }
+                              chain: X509CertificateChain,
+                              objects: Seq[DigitalSignatureObject])
 
   private def indentChildren(spaces: Int, children: NodeSeq): NodeSeq =
     children
@@ -183,14 +148,7 @@ object Signature {
       .flatten { case (a, b) => List(a, b) }
       .dropRight(1)
 
-  case class SignedInfo(references: Seq[Reference]) {
-    def toXml: Elem =
-      <ds:SignedInfo xmlns:ds={dsigNameSpace}>
-    <ds:CanonicalizationMethod Algorithm={canonicalizationAlgorithmIdentifier}/>
-    <ds:SignatureMethod Algorithm={signatureMethodAlgorithmIdentifier}/>
-    {indentChildren(4, references.map(_.toXml))}
-  </ds:SignedInfo>
-  }
+  case class SignedInfo(references: Seq[Reference])
 
   /** Not yet digested */
   case class OriginalDataToBeSigned(value: Array[Byte])
@@ -198,21 +156,20 @@ object Signature {
   /** Not yet digested */
   def originalDataToBeSigned(
       references: Seq[Reference]): OriginalDataToBeSigned = {
-    OriginalDataToBeSigned(canonicalize(SignedInfo(references).toXml).value)
+    OriginalDataToBeSigned(
+      canonicalize(SignatureMarshalling.marshall(SignedInfo(references))).value)
   }
 
   private def sign(signatureId: SignatureId,
                    references: Seq[Reference],
                    signatureValue: SignatureValue,
-                   certificate: SigningCertificate,
-                   restOfCertificateChain: RestOfCertificateChain,
+                   chain: X509CertificateChain,
                    objects: Seq[DigitalSignatureObject],
   ): DigitalSignature =
     DigitalSignature(signatureId,
                      SignedInfo(references),
                      signatureValue,
-                     certificate,
-                     restOfCertificateChain,
+                     chain,
                      objects)
 
   case class XadesSignedPropertiesId(value: String) {
@@ -235,86 +192,16 @@ object Signature {
       objectReferences: List[ReferenceId],
       commitmentTypeId: CommitmentTypeId,
       signingTime: SigningTime,
-      signingCertificate: SigningCertificate,
+      signingCertificate: X509Certificate,
       maybeSignaturePolicy: Option[SignaturePolicy],
-      signerRole: Option[SignerRole]) {
-    def toXml: Node = {
-      val issuer = new GeneralNames(
-        new GeneralName(
-          new X500Name(signingCertificate.value.getIssuerDN.getName)))
-      val issuerSerial =
-        new IssuerSerial(issuer, signingCertificate.value.getSerialNumber)
+      signerRole: Option[SignerRole])
 
-      // TODO complete SignedSignatureProperties
-      // TODO should SigningTime have milliseconds?
-      <xades:SignedProperties xmlns:xades={xadesNameSpace} xmlns:ds={dsigNameSpace} Id={id.value}>
-        <xades:SignedSignatureProperties>
-          <xades:SigningTime>{signingTime.value.toString}</xades:SigningTime>
-          <xades:SigningCertificateV2>
-            <xades:Cert>
-              <xades:CertDigest>
-                <ds:DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha512"/>
-                <ds:DigestValue>{Base64.getEncoder.encodeToString(MessageDigest.getInstance("SHA-512").digest(signingCertificate.value.getEncoded))}</ds:DigestValue>
-              </xades:CertDigest>
-              <xades:IssuerSerialV2>{Base64.getEncoder.encodeToString(issuerSerial.getEncoded)}</xades:IssuerSerialV2>
-            </xades:Cert>
-          </xades:SigningCertificateV2>
-          {maybeSignaturePolicy.map(id => <xades:SignaturePolicyIdentifier>
-            <xades:SigPolicyId>
-              <xades:Identifier>{id.id.toString}</xades:Identifier>
-            </xades:SigPolicyId>
-            <xades:SigPolicyHash>
-              <ds:DigestMethod Algorithm={digestMethodAlgorithmIdentifier}/>
-              <ds:DigestValue>{Base64.getEncoder.encodeToString(MessageDigest.getInstance("SHA-256").digest(id.value.toString.getBytes))}</ds:DigestValue>
-            </xades:SigPolicyHash>
-          </xades:SignaturePolicyIdentifier>).orNull}
-          {signerRole.map(role => <xades:SignerRoleV2>
-            {role.claimedRoles.length match {
-            case 0 => null
-            case _ => <xades:ClaimedRoles>
-              {role.claimedRoles.map(role => <xades:ClaimedRole>{role.value}</xades:ClaimedRole>)}
-            </xades:ClaimedRoles>
-            }}
-            {role.signedAssertions.length match {
-              case 0 => null
-              case _ => <xades:SignedAssertions>
-              {role.signedAssertions.map(assertion => <xades:SignedAssertion>
-{assertion.value}
-              </xades:SignedAssertion>)}
-            </xades:SignedAssertions>
-            }}
-          </xades:SignerRoleV2>).orNull}
-        </xades:SignedSignatureProperties>
-        <xades:SignedDataObjectProperties>
-          {objectReferences.map(ref => <xades:DataObjectFormat ObjectReference={s"#${ref.value}"}>
-            <xades:MimeType>text/xml</xades:MimeType>
-          </xades:DataObjectFormat>)}
-          <xades:CommitmentTypeIndication>
-            <xades:CommitmentTypeId>
-              <xades:Identifier>{commitmentTypeId.value}</xades:Identifier>
-            </xades:CommitmentTypeId>
-            <xades:AllSignedDataObjects/>
-          </xades:CommitmentTypeIndication>
-        </xades:SignedDataObjectProperties>
-      </xades:SignedProperties>
-    }
-  }
-
-  case class DigitalSignatureObject(value: QualifyingProperties) {
-    def toXml: Node = <ds:Object>
-    {value.toXml}
-  </ds:Object>
-  }
+  case class DigitalSignatureObject(value: QualifyingProperties)
 
   case class SignatureId(value: String)
 
   case class QualifyingProperties(target: SignatureId,
-                                  properties: XadesSignedProperties) {
-    def toXml: Node =
-      <xades:QualifyingProperties xmlns:xades={xadesNameSpace} Target={s"#${target.value}"}>
-      {properties.toXml}
-    </xades:QualifyingProperties>
-  }
+                                  properties: XadesSignedProperties)
 
   case class SignatureValue(value: Array[Byte])
 
@@ -326,7 +213,8 @@ object Signature {
     for (doc <- preparation.documents) {
       digest.update(doc.name.getBytes())
       digest.update(doc.content.toString().getBytes)
-      digest.update(preparation.certificate.value.getEncoded)
+      for (certificate <- preparation.chain.value)
+        digest.update(certificate.getEncoded)
     }
 
 //    val document = preparation.document
@@ -343,7 +231,7 @@ object Signature {
           documentReferenceId(d._2 + 1)),
         preparation.commitmentTypeId,
         preparation.signingTime,
-        preparation.certificate,
+        preparation.chain.value.head,
         preparation.signaturePolicyIdentifier,
         preparation.signerRole
       )
@@ -376,7 +264,7 @@ object Signature {
             Some(ReferenceType.SignedProperties),
             xadesSignedPropertiesId.reference,
             List(Transform(canonicalizationAlgorithmIdentifier)),
-            canonicalize(xadesSignedProperties.toXml).digestValue
+            canonicalize(SignatureMarshalling.marshall(xadesSignedProperties)).digestValue
           )
         )
 
@@ -385,9 +273,9 @@ object Signature {
 
   def sign(preparation: SignaturePreparation,
            signature: SignatureValue): Elem = {
-    val certificate = preparation.certificate
+    val certificate = preparation.chain.value.head
     val (signatureId, references, objects) = analyzeDocument(preparation)
-    val nparams = certificate.value.getPublicKey
+    val nparams = certificate.getPublicKey
       .asInstanceOf[BCRSAPublicKey]
     val params =
       new RSAKeyParameters(false, nparams.getModulus, nparams.getPublicExponent)
@@ -400,16 +288,12 @@ object Signature {
     sig2.initVerify(publicKey)
     sig2.update(dataToBeSigned.value)
 
-    if (enableValidation && !sig2.verify(signature.value))
+    if (unsafeSettingEnableValidation && !sig2.verify(signature.value))
       throw new Exception("Invalid signature value")
 
     val dsSignature =
-      sign(signatureId,
-           references,
-           signature,
-           certificate,
-           preparation.restOfCertificateChain,
-           objects).toXml
+      SignatureMarshalling.marshall(
+        sign(signatureId, references, signature, preparation.chain, objects))
     preparation.signatureType match {
       case SignatureType.Enveloped =>
         preparation.documents.head.content.copy(

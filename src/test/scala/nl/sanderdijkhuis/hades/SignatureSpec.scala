@@ -56,16 +56,14 @@ class SignatureSpec extends AnyFeatureSpec with GivenWhenThen {
 
       And("a private key and an X.509 certificate")
       val (privateKey, certificate) = generateTestKeyAndCertificate()
-      val signingCertificate = Signature.SigningCertificate(certificate)
-      val restOfCertificateChain = Signature.RestOfCertificateChain(List.empty)
+      val chain = Signature.X509CertificateChain(List(certificate))
 
       When("I prepare the document for an enveloped signature")
       val signingTime = Signature.SigningTime(Instant.now())
       val docs = List(Signature.OriginalDocument("foo.xml", doc))
       val preparation = Signature.prepare(
         docs,
-        signingCertificate,
-        restOfCertificateChain,
+        chain,
         signingTime,
         Signature.SignatureType.Enveloped,
         Signature.CommitmentTypeId("http://example.com/test#commitment-id"),
@@ -98,8 +96,7 @@ class SignatureSpec extends AnyFeatureSpec with GivenWhenThen {
 
       And("a private key and an X.509 certificate")
       val (privateKey, certificate) = generateTestKeyAndCertificate()
-      val signingCertificate = Signature.SigningCertificate(certificate)
-      val restOfCertificateChain = Signature.RestOfCertificateChain(List.empty)
+      val chain = Signature.X509CertificateChain(List(certificate))
 
       When("I prepare the document for a detached signature")
       val signingTime = Signature.SigningTime(Instant.now())
@@ -107,8 +104,7 @@ class SignatureSpec extends AnyFeatureSpec with GivenWhenThen {
       val docs = List(Signature.OriginalDocument(name, doc))
       val preparation = Signature.prepare(
         docs,
-        signingCertificate,
-        restOfCertificateChain,
+        chain,
         signingTime,
         Signature.SignatureType.Detached,
         Signature.CommitmentTypeId("http://example.com/test#commitment-id"),
