@@ -76,8 +76,7 @@ class SignatureSpec extends AnyFeatureSpec with GivenWhenThen {
       sig.initSign(privateKey)
       sig.update(preparation.dataToBeSigned.value)
       val signatureValue = Signature.SignatureValue(sig.sign())
-      val signature =
-        Signature.sign(preparation, signatureValue)
+      val signature = preparation.sign(signatureValue)
 
 //      println(signature)
 
@@ -126,8 +125,7 @@ class SignatureSpec extends AnyFeatureSpec with GivenWhenThen {
       sig.initSign(privateKey)
       sig.update(preparation.dataToBeSigned.value)
       val signatureValue = Signature.SignatureValue(sig.sign())
-      val signature =
-        Signature.sign(preparation, signatureValue)
+      val signature = preparation.sign(signatureValue)
 
       println(signature)
 

@@ -1,12 +1,6 @@
 package nl.sanderdijkhuis.hades
 
-import nl.sanderdijkhuis.hades.Signature.{
-  digestMethodAlgorithmIdentifier,
-  dsigNameSpace,
-  indentChildren,
-  xadesNameSpace,
-  _
-}
+import nl.sanderdijkhuis.hades.Signature._
 import org.apache.xml.security.c14n.Canonicalizer
 import org.bouncycastle.asn1.x500.X500Name
 import org.bouncycastle.asn1.x509.{GeneralName, GeneralNames, IssuerSerial}
@@ -35,7 +29,7 @@ object SignatureMarshalling {
       .flatten { case (a, b) => List(a, b) }
       .dropRight(1)
 
-  def marshall(signature: DigitalSignature): Elem =
+  def marshall(signature: Signature): Elem =
     <ds:Signature xmlns:ds={dsigNameSpace} Id={signature.id.value}>
   {marshall(signature.signedInfo)}
   <ds:SignatureValue>
