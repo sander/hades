@@ -1,6 +1,5 @@
 package nl.sanderdijkhuis.hades
 
-import nl.sanderdijkhuis.hades.Signature.CommitmentTypeId
 import org.bouncycastle.asn1.oiw.OIWObjectIdentifiers
 import org.bouncycastle.asn1.x500.X500Name
 import org.bouncycastle.asn1.x509.{
@@ -76,7 +75,7 @@ class SignatureSpec extends AnyFeatureSpec with GivenWhenThen {
       sig.update(commitment.challenge.value)
       val signatureValue = Signature.SignatureValue(sig.sign())
       val signature =
-        SignatureMarshalling.marshall(commitment.prove(signatureValue))
+        SignatureMarshalling.marshall(commitment.prove(signatureValue).get)
 
       println(signature)
 
@@ -125,7 +124,7 @@ class SignatureSpec extends AnyFeatureSpec with GivenWhenThen {
       sig.update(commitment.challenge.value)
       val signatureValue = Signature.SignatureValue(sig.sign())
       val signature =
-        SignatureMarshalling.marshall(commitment.prove(signatureValue))
+        SignatureMarshalling.marshall(commitment.prove(signatureValue).get)
 
       println(signature)
 

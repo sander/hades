@@ -10,7 +10,7 @@ import org.bouncycastle.util.encoders.Hex
 import java.net.URI
 import java.security.cert.X509Certificate
 import java.security.spec.RSAPublicKeySpec
-import java.security.{KeyFactory, MessageDigest}
+import java.security.{KeyFactory, MessageDigest, PublicKey}
 import java.time.Instant
 import java.util.Base64
 import scala.language.implicitConversions
@@ -39,12 +39,6 @@ object Signature {
                            signatureValue: SignatureValue,
                            chain: X509CertificateChain,
                            objects: Seq[DigitalSignatureObject])
-
-  /** Required for e.g. SAML assertions */
-  case class Enveloped(override val data: SignatureData, envelope: Envelope)
-      extends Signature(data)
-
-  case class Detached(override val data: SignatureData) extends Signature(data)
 
   case class SigningTime(value: Instant)
 
@@ -127,36 +121,53 @@ object Signature {
         DigitalSignatureObject(
           QualifyingProperties(signatureId, signedProperties)))
 
-    def prove(signature: SignatureValue): S = {
-      val certificate = chain.value.head
-      val nparams = certificate.getPublicKey
+    private def publicKey: PublicKey =
+      chain.value.head.getPublicKey
         .asInstanceOf[BCRSAPublicKey]
-      val params =
-        new RSAKeyParameters(false,
-                             nparams.getModulus,
-                             nparams.getPublicExponent)
-      val sig2 = java.security.Signature.getInstance("SHA256withRSA")
-      val publicKey = KeyFactory
-        .getInstance("RSA")
-        .generatePublic(
-          new RSAPublicKeySpec(params.getModulus, params.getExponent))
-      sig2.initVerify(publicKey)
-      sig2.update(challenge().value)
+        .pipe(k => new RSAPublicKeySpec(k.getModulus, k.getPublicExponent))
+        .pipe(KeyFactory.getInstance("RSA").generatePublic)
 
-      if (unsafeSettingEnableValidation && !sig2.verify(signature.value))
-        throw new Exception("Invalid signature value")
+    private def verify(signatureValue: SignatureValue): Boolean =
+      java.security.Signature
+        .getInstance("SHA256withRSA")
+        .tap(_.initVerify(publicKey))
+        .tap(_.update(challenge().value))
+        .verify(signatureValue.value)
 
-      val data =
-        SignatureData(signatureId, signedInfo, signature, chain, objects)
-
-      implicitly[ClassTag[S]] match {
-        case t if t == classTag[Enveloped] =>
-          Enveloped(data, Envelope(documents.head.content)).asInstanceOf[S]
-        case t if t == classTag[Detached] =>
-          Detached(data).asInstanceOf[S]
-      }
-    }
+//    def prove(signature: SignatureValue): Option[S] =
+//      Option.unless(unsafeSettingEnableValidation && !verify(signature))(
+//        SignatureData(signatureId, signedInfo, signature, chain, objects).pipe(
+//          data =>
+//            implicitly[ClassTag[S]] match {
+//              case t if t == classTag[Enveloped] =>
+//                Enveloped(data, Envelope(documents.head.content))
+//                  .asInstanceOf[S]
+//              case t if t == classTag[Detached] =>
+//                Detached(data).asInstanceOf[S]
+//          }))
+    def prove(signature: SignatureValue)(
+        implicit wrapper: SignatureWrapper[S]): Option[S] =
+      Option.unless(unsafeSettingEnableValidation && !verify(signature))(
+        SignatureData(signatureId, signedInfo, signature, chain, objects).pipe(
+          wrapper.signature(this, _)))
   }
+
+  /** Required for e.g. SAML assertions */
+  case class Enveloped(override val data: SignatureData, envelope: Envelope)
+      extends Signature(data)
+
+  case class Detached(override val data: SignatureData) extends Signature(data)
+
+  trait SignatureWrapper[S <: Signature] {
+    def signature(commitment: Commitment[S], data: SignatureData): S
+  }
+
+  implicit val envelopedWrapper: SignatureWrapper[Enveloped] =
+    (commitment: Commitment[Enveloped], data: SignatureData) =>
+      Enveloped(data, Envelope(commitment.documents.head.content))
+
+  implicit val detachedWrapper: SignatureWrapper[Detached] =
+    (commitment: Commitment[Detached], data: SignatureData) => Detached(data)
 
   case class OriginalDocument(name: String, content: Elem)
 
