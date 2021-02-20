@@ -1,6 +1,6 @@
 package nl.sanderdijkhuis.hades
 
-import nl.sanderdijkhuis.hades.Signature._
+import nl.sanderdijkhuis.hades.AdvancedSignature._
 import org.apache.xml.security.c14n.Canonicalizer
 import org.bouncycastle.asn1.x500.X500Name
 import org.bouncycastle.asn1.x509.{GeneralName, GeneralNames, IssuerSerial}

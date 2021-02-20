@@ -30,7 +30,7 @@ import java.net.URI
 import java.security.cert.X509Certificate
 import java.security.interfaces.RSAPrivateKey
 import java.security.spec.RSAPublicKeySpec
-import java.security.{Key, KeyFactory, SecureRandom}
+import java.security.{Key, KeyFactory, SecureRandom, Signature}
 import java.time.Instant
 import java.time.temporal.ChronoUnit
 import java.util.Date
@@ -43,6 +43,7 @@ import javax.xml.parsers.DocumentBuilderFactory
 import javax.xml.validation.SchemaFactory
 import scala.jdk.CollectionConverters._
 import scala.xml.{Elem, Text}
+import scala.util.chaining._
 
 class SignatureSpec extends AnyFeatureSpec with GivenWhenThen {
   Feature("Signatures") {
@@ -55,27 +56,28 @@ class SignatureSpec extends AnyFeatureSpec with GivenWhenThen {
 
       And("a private key and an X.509 certificate")
       val (privateKey, certificate) = generateTestKeyAndCertificate()
-      val chain = Signature.X509CertificateChain(List(certificate))
+      val chain = AdvancedSignature.X509CertificateChain(List(certificate))
 
       When("I prepare the document for an enveloped signature")
-      val signingTime = Signature.SigningTime(Instant.now())
-      val docs = List(Signature.OriginalDocument("foo.xml", doc))
-      val commitment = Signature.Commitment[Signature.Enveloped](
-        docs,
-        chain,
-        signingTime,
-        Signature.CommitmentTypeId("http://example.com/test#commitment-id"),
-        None,
-        None
-      )
+      val signingTime = AdvancedSignature.SigningTime(Instant.now())
+      val docs = List(AdvancedSignature.OriginalDocument("foo.xml", doc))
+      val commitment =
+        AdvancedSignature.Commitment[AdvancedSignature.Enveloped](
+          docs,
+          chain,
+          signingTime,
+          AdvancedSignature.CommitmentTypeId(
+            "http://example.com/test#commitment-id")
+        )
 
       And("I sign the document")
-      val sig = java.security.Signature.getInstance("SHA256withRSA")
-      sig.initSign(privateKey)
-      sig.update(commitment.challenge.value)
-      val signatureValue = Signature.SignatureValue(sig.sign())
-      val signature =
-        SignatureMarshalling.marshall(commitment.prove(signatureValue).get)
+      val signatureValue = Signature
+        .getInstance("SHA256withRSA")
+        .tap(_.initSign(privateKey))
+        .tap(_.update(commitment.challenge().value))
+        .sign()
+        .pipe(AdvancedSignature.SignatureValue)
+      val signature = commitment.prove(signatureValue).map(_.toXml).get
 
       println(signature)
 
@@ -94,24 +96,24 @@ class SignatureSpec extends AnyFeatureSpec with GivenWhenThen {
 
       And("a private key and an X.509 certificate")
       val (privateKey, certificate) = generateTestKeyAndCertificate()
-      val chain = Signature.X509CertificateChain(List(certificate))
+      val chain = AdvancedSignature.X509CertificateChain(List(certificate))
 
       When("I prepare the document for a detached signature")
-      val signingTime = Signature.SigningTime(Instant.now())
+      val signingTime = AdvancedSignature.SigningTime(Instant.now())
       val name = "foo.xml"
-      val docs = List(Signature.OriginalDocument(name, doc))
-      val commitment = Signature.Commitment[Signature.Detached](
+      val docs = List(AdvancedSignature.OriginalDocument(name, doc))
+      val commitment = AdvancedSignature.Commitment[AdvancedSignature.Detached](
         docs,
         chain,
         signingTime,
-        Signature.CommitmentTypeId("http://example.com/test#commitment-id"),
+        AdvancedSignature.CommitmentTypeId(
+          "http://example.com/test#commitment-id"),
+        Some(AdvancedSignature
+          .SignaturePolicy(URI.create("http://example.com/policy"), <policy/>)),
         Some(
-          Signature.SignaturePolicy(URI.create("http://example.com/policy"),
-                                    <policy/>)),
-        Some(
-          Signature.SignerRole(
-            List(Signature.ClaimedRole(Text("foo"))),
-            List(Signature.SignedAssertion(
+          AdvancedSignature.SignerRole(
+            List(AdvancedSignature.ClaimedRole(Text("foo"))),
+            List(AdvancedSignature.SignedAssertion(
               <saml:Assertion xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion">
   <saml:Issuer/>
 </saml:Assertion>))
@@ -119,12 +121,11 @@ class SignatureSpec extends AnyFeatureSpec with GivenWhenThen {
       )
 
       And("I sign the document")
-      val sig = java.security.Signature.getInstance("SHA256withRSA")
+      val sig = Signature.getInstance("SHA256withRSA")
       sig.initSign(privateKey)
       sig.update(commitment.challenge.value)
-      val signatureValue = Signature.SignatureValue(sig.sign())
-      val signature =
-        SignatureMarshalling.marshall(commitment.prove(signatureValue).get)
+      val signatureValue = AdvancedSignature.SignatureValue(sig.sign())
+      val signature = commitment.prove(signatureValue).map(_.toXml).get
 
       println(signature)
 

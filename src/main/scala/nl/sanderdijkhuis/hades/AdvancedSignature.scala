@@ -1,8 +1,6 @@
 package nl.sanderdijkhuis.hades
 
-import nl.sanderdijkhuis.hades.Signature._
 import org.apache.xml.security.c14n.Canonicalizer
-import org.bouncycastle.crypto.params.RSAKeyParameters
 import org.bouncycastle.jcajce.provider.asymmetric.rsa.BCRSAPublicKey
 import org.bouncycastle.jcajce.provider.digest.SHA3
 import org.bouncycastle.util.encoders.Hex
@@ -14,17 +12,14 @@ import java.security.{KeyFactory, MessageDigest, PublicKey}
 import java.time.Instant
 import java.util.Base64
 import scala.language.implicitConversions
-import scala.reflect.{ClassManifest, ClassTag, classTag}
-import scala.xml.{Elem, Node, Text}
 import scala.util.chaining._
+import scala.xml.{Elem, Node, Text}
 
 // https://www.etsi.org/deliver/etsi_ts/101900_101999/101903/01.04.02_60/ts_101903v010402p.pdf
 // https://www.w3.org/TR/xmldsig-core1/#sec-Processing
-sealed abstract class Signature(val data: Signature.SignatureData)
-object Signature {
-
-  org.apache.xml.security.Init.init()
-
+sealed abstract class AdvancedSignature(
+    val data: AdvancedSignature.SignatureData)
+object AdvancedSignature {
   var unsafeSettingEnableValidation: Boolean = true
 
   private val canonicalizationAlgorithmIdentifier: String =
@@ -42,23 +37,29 @@ object Signature {
 
   case class SigningTime(value: Instant)
 
-  /** Head is the signing certificate */
-  case class X509CertificateChain private (value: List[X509Certificate])
+  case class X509CertificateChain private (value: List[X509Certificate]) {
+
+    def head: X509Certificate = value.head
+  }
   object X509CertificateChain {
 
-    /** Ensures the list is not empty */
     def apply(head: X509Certificate,
               tail: X509Certificate*): X509CertificateChain =
       X509CertificateChain(head :: tail.toList)
   }
 
-  case class Commitment[S <: Signature: ClassTag] private (
+  case class Commitment[S <: AdvancedSignature](
       documents: List[OriginalDocument],
       chain: X509CertificateChain,
       signingTime: SigningTime,
       commitmentTypeId: CommitmentTypeId,
-      signaturePolicyIdentifier: Option[SignaturePolicy],
-      signerRole: Option[SignerRole]) {
+      signaturePolicyIdentifier: Option[SignaturePolicy] = None,
+      signerRole: Option[SignerRole] = None)(implicit wrapper: Processing[S]) {
+
+    private def sufficientlyUniqueIdentifier(parts: Array[Byte]*): String =
+      new SHA3.Digest256()
+        .tap(d => parts.foreach(d.update))
+        .pipe(d => new String(Hex.encode(d.digest())).substring(0, 16))
 
     lazy private val id: String = (documents.flatMap(doc =>
       List(doc.name.getBytes, doc.content.toString.getBytes)) ++
@@ -67,13 +68,12 @@ object Signature {
       .pipe(sufficientlyUniqueIdentifier(_: _*))
 
     private def signatureId: SignatureId = SignatureId(s"sig-id-${id}")
-    private def documentReferenceId(i: Int): ReferenceId =
+    def documentReferenceId(i: Int): ReferenceId =
       ReferenceId(s"ref-id-${id}-${i}")
     private def signedPropertiesId =
       SignedPropertiesId(s"xades-id-${id}")
 
-    def challenge(): OriginalDataToBeSigned =
-      originalDataToBeSigned(signedInfo)
+    def challenge(): OriginalDataToBeSigned = signedInfo.originalDataToBeSigned
 
     private def signedProperties = SignedProperties(
       signedPropertiesId,
@@ -85,27 +85,9 @@ object Signature {
       signerRole
     )
 
-    def signedInfo: SignedInfo =
+    private def signedInfo: SignedInfo =
       SignedInfo(
-        (implicitly[ClassTag[S]] match {
-          case t if t == classTag[Enveloped] =>
-            List(
-              generateReferenceToDocument(
-                documentReferenceId(1),
-                documents.head.content
-                  .copy(
-                    child = documents.head.content.child ++ Text("\n") ++ Text(
-                      "\n\n")),
-                URI.create("")
-              ))
-          case t if t == classTag[Detached] =>
-            documents.zipWithIndex
-              .map(
-                d =>
-                  generateReferenceToDocument(documentReferenceId(d._2 + 1),
-                                              d._1.content,
-                                              URI.create(d._1.name)))
-        }) ++
+        wrapper.references(this) ++
           List(
             Reference(
               None,
@@ -116,7 +98,7 @@ object Signature {
             )
           ))
 
-    def objects: List[DigitalSignatureObject] =
+    private def objects: List[DigitalSignatureObject] =
       List(
         DigitalSignatureObject(
           QualifyingProperties(signatureId, signedProperties)))
@@ -134,19 +116,7 @@ object Signature {
         .tap(_.update(challenge().value))
         .verify(signatureValue.value)
 
-//    def prove(signature: SignatureValue): Option[S] =
-//      Option.unless(unsafeSettingEnableValidation && !verify(signature))(
-//        SignatureData(signatureId, signedInfo, signature, chain, objects).pipe(
-//          data =>
-//            implicitly[ClassTag[S]] match {
-//              case t if t == classTag[Enveloped] =>
-//                Enveloped(data, Envelope(documents.head.content))
-//                  .asInstanceOf[S]
-//              case t if t == classTag[Detached] =>
-//                Detached(data).asInstanceOf[S]
-//          }))
-    def prove(signature: SignatureValue)(
-        implicit wrapper: SignatureWrapper[S]): Option[S] =
+    def prove(signature: SignatureValue): Option[S] =
       Option.unless(unsafeSettingEnableValidation && !verify(signature))(
         SignatureData(signatureId, signedInfo, signature, chain, objects).pipe(
           wrapper.signature(this, _)))
@@ -154,35 +124,67 @@ object Signature {
 
   /** Required for e.g. SAML assertions */
   case class Enveloped(override val data: SignatureData, envelope: Envelope)
-      extends Signature(data)
+      extends AdvancedSignature(data) {
 
-  case class Detached(override val data: SignatureData) extends Signature(data)
+    def toXml: Node = SignatureMarshalling.marshall(this)
+  }
 
-  trait SignatureWrapper[S <: Signature] {
+  case class Detached(override val data: SignatureData)
+      extends AdvancedSignature(data) {
+
+    def toXml: Node = SignatureMarshalling.marshall(this)
+  }
+
+  trait Processing[S <: AdvancedSignature] {
+    def references(commitment: Commitment[S]): List[Reference]
     def signature(commitment: Commitment[S], data: SignatureData): S
   }
 
-  implicit val envelopedWrapper: SignatureWrapper[Enveloped] =
-    (commitment: Commitment[Enveloped], data: SignatureData) =>
-      Enveloped(data, Envelope(commitment.documents.head.content))
+  implicit object EnvelopedProcessing extends Processing[Enveloped] {
+    override def references(
+        commitment: Commitment[Enveloped]): List[Reference] =
+      List(
+        generateReferenceToDocument(
+          commitment.documentReferenceId(1),
+          commitment.documents.head.content
+            .copy(
+              child = commitment.documents.head.content.child ++ Text("\n") ++ Text(
+                "\n\n")),
+          URI.create("")
+        ))
 
-  implicit val detachedWrapper: SignatureWrapper[Detached] =
-    (commitment: Commitment[Detached], data: SignatureData) => Detached(data)
+    override def signature(commitment: Commitment[Enveloped],
+                           data: SignatureData): Enveloped =
+      Enveloped(data, Envelope(commitment.documents.head.content))
+  }
+
+  implicit object DetachedProcessing extends Processing[Detached] {
+    override def references(commitment: Commitment[Detached]): List[Reference] =
+      commitment.documents.zipWithIndex
+        .map(
+          d =>
+            generateReferenceToDocument(
+              commitment.documentReferenceId(d._2 + 1),
+              d._1.content,
+              URI.create(d._1.name)))
+
+    override def signature(commitment: Commitment[Detached],
+                           data: SignatureData): Detached = Detached(data)
+  }
 
   case class OriginalDocument(name: String, content: Elem)
 
-  def canonicalize(node: Node): CanonicalData = {
-    CanonicalData(
-      Canonicalizer
-        .getInstance(canonicalizationAlgorithmIdentifier)
-        .canonicalize(node.toString.getBytes))
+  private def canonicalize(node: Node): CanonicalData = {
+    org.apache.xml.security.Init.init()
+    Canonicalizer
+      .getInstance(canonicalizationAlgorithmIdentifier)
+      .canonicalize(node.toString.getBytes)
+      .pipe(CanonicalData)
   }
 
-  def digest(input: Array[Byte]): DigestValue =
-    DigestValue(MessageDigest.getInstance("SHA-256").digest(input))
-
   case class CanonicalData(value: Array[Byte]) {
-    def digestValue: DigestValue = digest(value)
+    def digestValue: DigestValue =
+      MessageDigest.getInstance("SHA-256").digest(value).pipe(DigestValue)
   }
 
   case class DigestValue(value: Array[Byte]) {
@@ -211,8 +213,7 @@ object Signature {
 
   private def generateReferenceToDocument(id: ReferenceId,
                                           node: Node,
-                                          uri: URI): Reference = {
-    val canonicalized = canonicalize(node)
+                                          uri: URI): Reference =
     Reference(
       Some(id),
       None,
@@ -222,20 +223,17 @@ object Signature {
           List(Transform(envelopedSignatureTransformIdentifier))
         case _ => List.empty
       }) ++ List(Transform(canonicalizationAlgorithmIdentifier)),
-      canonicalized.digestValue
+      canonicalize(node).digestValue
     )
+
+  case class SignedInfo(references: Seq[Reference]) {
+    def originalDataToBeSigned: OriginalDataToBeSigned =
+      OriginalDataToBeSigned(
+        canonicalize(SignatureMarshalling.marshall(this)).value)
   }
 
-  case class SignedInfo(references: Seq[Reference])
-
   /** Not yet digested */
-  case class OriginalDataToBeSigned(value: Array[Byte])
-
-  /** Not yet digested */
-  def originalDataToBeSigned(signedInfo: SignedInfo): OriginalDataToBeSigned = {
-    OriginalDataToBeSigned(
-      canonicalize(SignatureMarshalling.marshall(signedInfo)).value)
-  }
+  case class OriginalDataToBeSigned private (value: Array[Byte])
 
   case class SignedPropertiesId(value: String) {
     def reference: URI = URI.create(s"#${value}")
@@ -268,11 +266,4 @@ object Signature {
                                   properties: SignedProperties)
 
   case class SignatureValue(value: Array[Byte])
-
-  /** Deterministic */
-  private def sufficientlyUniqueIdentifier(parts: Array[Byte]*): String = {
-    val digest = new SHA3.Digest256()
-    for (part <- parts) digest.update(part)
-    new String(Hex.encode(digest.digest())).substring(0, 16)
-  }
 }
